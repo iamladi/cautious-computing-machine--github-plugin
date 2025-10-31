@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-10-31
+
+### Added
+
+- `/create-pr` command for creating GitHub Pull Requests with proper formatting
+  - Fetches issue details from GitHub
+  - Generates structured PR title in format: `<type>: #<number> - <title>`
+  - Creates comprehensive PR body with summary, plan link, issue reference, and changes
+  - Supports optional implementation plan file as second argument
+  - Returns PR URL for easy access
+- Keywords: "pull-request", "pr" for better discoverability
+
+### Changed
+
+- Plugin description updated to include PR creation functionality
+
 ## [1.0.0] - 2025-10-31
 
 ### Added
