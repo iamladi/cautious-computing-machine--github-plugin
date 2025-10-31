@@ -1,6 +1,6 @@
 # GitHub Plugin for Claude Code
 
-GitHub CI/CD automation plugin that auto-detects, analyzes, and fixes CI/CD failures on any branch.
+GitHub automation plugin for CI/CD, pull requests, and code review workflows.
 
 ## Features
 
@@ -10,6 +10,9 @@ GitHub CI/CD automation plugin that auto-detects, analyzes, and fixes CI/CD fail
 - 🛡️ **Safety checks** - Warns about main branch changes and uncommitted work
 - 🎯 **Specialized agents** - Dedicated agents for log analysis and error fixing
 - 📝 **PR creation** - Generate well-formatted pull requests from GitHub issues
+- 💬 **PR comment resolution** - Interactive or autonomous review comment resolution
+- 🤖 **AI confidence scoring** - Smart prioritization of review comments (0-100 score)
+- 🔄 **Rollback safety** - Auto-stash changes in autonomous mode for easy undo
 
 ## Installation
 
@@ -90,6 +93,108 @@ $ /create-pr 123 docs/implementation-plan.md
 
 # Reviews changes, creates PR, returns:
 https://github.com/user/repo/pull/456
+```
+
+### `/address-pr-comments`
+
+Interactive or autonomous workflow for addressing PR review comments with AI-powered confidence scoring.
+
+**Modes:**
+
+The command automatically detects the execution environment:
+- **Interactive Mode** (terminal): User selects which comments to address
+- **Autonomous Mode** (CI/CD): Auto-addresses high-confidence comments (score ≥ 80)
+
+**Usage:**
+```bash
+# Interactive mode (default in terminal)
+/address-pr-comments 18
+/address-pr-comments https://github.com/owner/repo/pull/123
+
+# Autonomous mode (auto-detected in CI/CD)
+/address-pr-comments 18 --autonomous
+/address-pr-comments 18 auto
+
+# Force interactive mode
+/address-pr-comments 18 --interactive
+```
+
+**What it does:**
+
+1. **Fetches PR data**: Downloads PR details, review comments, and issue comments using `gh` CLI
+2. **Analyzes & scores comments**: Filters actionable comments, categorizes by type, and assigns confidence scores (0-100)
+3. **Presents or filters**: Interactive shows all comments; Autonomous filters for high-confidence (≥80)
+4. **Applies changes**: Reads files, explains changes, and uses Edit tool to apply fixes
+5. **Reports results**: Shows detailed summary with addressed items and skipped items
+
+**Confidence Scoring (0-100):**
+
+Comments are scored based on:
+- **Specificity** (30pts): File path + line number + concrete suggestion
+- **Language clarity** (25pts): Directive ("must", "please") vs suggestive ("consider")
+- **Category** (25pts): STYLE (25) > DOCS (20) > CODE (15) > TEST (10)
+- **Reviewer authority** (10pts): Maintainer/owner (10) > contributor (3)
+- **Discussion status** (10pts): Blocking (10) > unresolved (7)
+
+**Thresholds:**
+- **80-100 (High)**: Auto-addressed in autonomous mode
+- **60-79 (Medium)**: Presented in interactive mode
+- **0-59 (Low)**: Skipped or flagged for manual review
+
+**Comment categories:**
+- **CODE**: Logic changes, bug fixes, refactoring
+- **STYLE**: Formatting, naming conventions
+- **DOCS**: Documentation improvements
+- **TEST**: Test coverage, test improvements
+- **QUESTIONS**: Clarifications needed
+
+**Safety features:**
+- **Autonomous mode**: Creates git stash rollback point before changes
+- No automatic commits or pushes
+- Shows changes and confidence scores
+- Skips ambiguous or low-confidence comments
+- Detailed reporting of what was/wasn't addressed
+
+**Interactive Mode Example:**
+```bash
+$ /address-pr-comments 42
+
+Found 3 comments on PR #42: Add user authentication
+
+1. [CODE] src/auth.ts:25 (Score: 90)
+   Comment: "Add null check before accessing user.email"
+
+2. [STYLE] src/utils.ts:42 (Score: 95)
+   Comment: "Use const instead of let"
+
+Which items would you like me to address? all
+
+✓ Addressed item 1: Added null check
+✓ Addressed item 2: Changed let to const
+
+📊 Summary: 2 comments addressed, 2 files modified
+```
+
+**Autonomous Mode Example:**
+```bash
+$ /address-pr-comments 42 --auto
+
+🤖 AUTONOMOUS MODE ACTIVE
+
+Analyzing 5 comments on PR #42
+Confidence threshold: 80/100
+
+High-Confidence Items (2):
+✓ [STYLE] src/utils.ts:42 (95) - Changed let to const
+✓ [CODE] src/auth.ts:25 (90) - Added null check
+
+Skipped Items (3):
+⏭️ [CODE] src/api.ts:55 (65) - Vague suggestion
+⏭️ [TEST] tests/auth.test.ts (45) - Question without action
+⏭️ [QUESTIONS] src/models.ts (35) - Ambiguous feedback
+
+🔄 Rollback: git stash apply stash^{/pre-autonomous-pr-42-...}
+📊 Summary: 2 addressed, 3 skipped, 2 files modified
 ```
 
 ## Agents
