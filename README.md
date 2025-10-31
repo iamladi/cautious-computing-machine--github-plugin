@@ -9,6 +9,7 @@ GitHub CI/CD automation plugin that auto-detects, analyzes, and fixes CI/CD fail
 - 🔧 **Automated fixes** - Applies targeted fixes for common CI failures
 - 🛡️ **Safety checks** - Warns about main branch changes and uncommitted work
 - 🎯 **Specialized agents** - Dedicated agents for log analysis and error fixing
+- 📝 **PR creation** - Generate well-formatted pull requests from GitHub issues
 
 ## Installation
 
@@ -62,6 +63,34 @@ Auto-detect, analyze, and fix CI/CD failures.
 - Alerts about uncommitted changes
 - Flags unclear fixes for manual review
 - Asks about priorities when multiple failure types exist
+
+### `/create-pr`
+
+Create GitHub Pull Request with proper formatting and context.
+
+**Usage:**
+```bash
+/create-pr <issue_number>                    # Basic PR from issue
+/create-pr <issue_number> path/to/plan.md    # PR with implementation plan
+```
+
+**What it does:**
+
+1. **Fetches issue details**: Uses `gh issue view` to get issue info
+2. **Generates PR title**: Format: `<issue_type>: #<issue_number> - <issue_title>`
+   - Examples: `feat: #123 - Add user authentication`, `bug: #456 - Fix login error`
+3. **Creates PR body**: Includes summary, plan link, issue reference, checklist, and changes
+4. **Reviews changes**: Shows git diff and commit history
+5. **Pushes and creates**: Pushes branch and creates PR with `gh pr create`
+6. **Returns PR URL**: Outputs only the PR URL for easy access
+
+**Example:**
+```bash
+$ /create-pr 123 docs/implementation-plan.md
+
+# Reviews changes, creates PR, returns:
+https://github.com/user/repo/pull/456
+```
 
 ## Agents
 
