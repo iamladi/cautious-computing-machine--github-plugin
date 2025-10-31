@@ -35,6 +35,9 @@
     },
     "address-pr-comments": {
       "description": "Interactive or autonomous PR comment resolution with confidence scoring"
+    },
+    "review-pr": {
+      "description": "Comprehensive PR review with detailed analysis and actionable feedback"
     }
   },
   "agents": {
