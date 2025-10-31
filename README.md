@@ -197,6 +197,38 @@ Skipped Items (3):
 📊 Summary: 2 addressed, 3 skipped, 2 files modified
 ```
 
+### `/review-pr`
+
+Comprehensive PR review with detailed analysis and actionable feedback.
+
+**Usage:**
+```bash
+/review-pr 123                              # Review PR by number
+/review-pr https://github.com/owner/repo/pull/456  # Review by URL
+/review-pr owner/repo#789                   # Review with repo context
+```
+
+**What it does:**
+
+1. **Fetches PR data**: Downloads PR details, diff, comments, and CI status using `gh` CLI
+2. **Checks out branch**: Switches to PR branch for local analysis
+3. **Analyzes changes**: Reviews all modified files, commit history, and diff
+4. **Reviews discussions**: Examines comments, unresolved threads, and CI results
+5. **Generates report**: Provides structured review with executive summary, code quality analysis, file-by-file feedback
+
+**Review output includes:**
+- **Executive Summary**: Purpose, scope, risk level, recommendation (Approve/Request Changes)
+- **Code Quality Analysis**: Architecture, style, testing, documentation, error handling, security
+- **File-by-File Review**: Detailed feedback for each changed file
+- **Discussion Review**: Unresolved conversations, CI status, action items
+- **Recommendations**: Must fix, should fix, consider, and praise items
+
+**Safety checks:**
+- Warns about uncommitted changes before checkout
+- Requires GitHub CLI authentication
+- Respects repository permissions
+- Checks project conventions (CONTRIBUTING.md, PR templates)
+
 ## Agents
 
 ### `ci-log-analyzer`
@@ -300,7 +332,10 @@ github-plugin/
 ├── .github/workflows/
 │   └── validate-plugin.yml      # CI validation
 ├── commands/
-│   └── fix-ci.md                # Main CI fixing command
+│   ├── fix-ci.md                # CI fixing command
+│   ├── create-pr.md             # PR creation command
+│   ├── address-pr-comments.md   # PR comment resolution
+│   └── review-pr.md             # PR review command
 ├── agents/
 │   ├── ci-log-analyzer.md       # Log parsing agent
 │   └── ci-error-fixer.md        # Error fixing agent
