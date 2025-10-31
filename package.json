@@ -1,0 +1,23 @@
+{
+  "name": "github-plugin",
+  "version": "1.0.0",
+  "description": "GitHub CI/CD automation plugin for Claude Code",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate": "bun run scripts/validate-plugin.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "zod": "^3.23.8"
+  },
+  "keywords": [
+    "claude-code",
+    "github",
+    "ci-cd",
+    "automation",
+    "github-actions"
+  ],
+  "author": "Ladislav Martincik",
+  "license": "MIT"
+}

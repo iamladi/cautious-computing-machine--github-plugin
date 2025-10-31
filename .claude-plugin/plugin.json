@@ -1,0 +1,35 @@
+{
+  "name": "github",
+  "version": "1.0.0",
+  "description": "GitHub CI/CD automation plugin for auto-detecting, analyzing, and fixing CI/CD failures on any branch",
+  "author": {
+    "name": "Ladislav Martincik",
+    "url": "https://github.com/iamladi"
+  },
+  "homepage": "https://github.com/iamladi/claude-code-plugins/tree/main/github-plugin",
+  "repository": "https://github.com/iamladi/claude-code-plugins",
+  "license": "MIT",
+  "keywords": [
+    "github",
+    "ci",
+    "cd",
+    "continuous-integration",
+    "github-actions",
+    "automation",
+    "fix-ci",
+    "devops"
+  ],
+  "commands": {
+    "fix-ci": {
+      "description": "Auto-detect, analyze, and fix CI/CD failures on any branch"
+    }
+  },
+  "agents": {
+    "ci-log-analyzer": {
+      "description": "Specialized agent for parsing CI logs and identifying error patterns"
+    },
+    "ci-error-fixer": {
+      "description": "Specialized agent for applying fixes based on CI error types"
+    }
+  }
+}
