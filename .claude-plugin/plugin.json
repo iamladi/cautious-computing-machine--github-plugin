@@ -44,14 +44,8 @@
       "source": "./commands/review-pr.md"
     }
   },
-  "agents": {
-    "ci-log-analyzer": {
-      "description": "Specialized agent for parsing CI logs and identifying error patterns",
-      "source": "./agents/ci-log-analyzer.md"
-    },
-    "ci-error-fixer": {
-      "description": "Specialized agent for applying fixes based on CI error types",
-      "source": "./agents/ci-error-fixer.md"
-    }
-  }
+  "agents": [
+    "./agents/ci-log-analyzer.md",
+    "./agents/ci-error-fixer.md"
+  ]
 }
