@@ -21,20 +21,18 @@ plan_file: $2
     - `bug: #456 - Fix login validation error`
     - `chore: #789 - Update dependencies`
 - The PR body should include:
-  - A summary section with the issue context
+  - A summary section explaining the **why** and context
   - Link to the implementation plan file
   - Reference to the issue (Closes #<issue_number>)
-  - A checklist of what was done
-  - A summary of key changes made
+  - "Review Focus" section highlighting what reviewers should pay attention to, potential gotchas, or architectural decisions
+  - "Testing Notes" section (only if there's something non-obvious beyond CI checks)
 
 ## Run
 
-1. Run `git diff origin/main...HEAD --stat` to see a summary of changed files
-2. Run `git log origin/main..HEAD --oneline` to see the commits that will be included
-3. Run `git diff origin/main...HEAD --name-only` to get a list of changed files
-4. Run `git push -u origin <branch_name>` to push the branch
-5. Run `gh pr create --title "<pr_title>" --body "<pr_body>" --base main` to create the PR
-6. Capture the PR URL from the output
+1. Run `git log origin/main..HEAD --oneline` to understand the commits being included
+2. Run `git push -u origin <branch_name>` to push the branch
+3. Run `gh pr create --title "<pr_title>" --body "<pr_body>" --base main` to create the PR
+4. Capture the PR URL from the output
 
 ## Report
 
