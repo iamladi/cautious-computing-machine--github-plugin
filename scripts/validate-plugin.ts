@@ -20,9 +20,7 @@ const PluginManifestSchema = z.object({
   commands: z.record(z.object({
     description: z.string().optional(),
   })).optional(),
-  agents: z.record(z.object({
-    description: z.string().optional(),
-  })).optional(),
+  agents: z.array(z.string()).optional(),
   hooks: z.union([z.string(), z.record(z.any())]).optional(),
   mcpServers: z.union([z.string(), z.record(z.any())]).optional(),
 });
