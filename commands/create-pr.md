@@ -13,19 +13,115 @@ plan_file: $2
 
 ## Instructions
 
-- Generate a pull request title in the format: `<issue_type>: #<issue_number> - <issue_title>`
-  - Extract issue number, type, and title from the issue JSON
-    - Use `gh issue view <issue_number> --json number,title,body` to fetch issue details
-  - Examples of PR titles:
-    - `feat: #123 - Add user authentication`
-    - `bug: #456 - Fix login validation error`
-    - `chore: #789 - Update dependencies`
-- The PR body should include:
-  - A summary section explaining the **why** and context
-  - Link to the implementation plan file
-  - Reference to the issue (Closes #<issue_number>)
-  - "Review Focus" section highlighting what reviewers should pay attention to, potential gotchas, or architectural decisions
-  - "Testing Notes" section (only if there's something non-obvious beyond CI checks)
+### PR Title Format
+Generate a pull request title in the format: `<issue_type>: #<issue_number> - <issue_title>`
+- Extract issue number, type, and title from the issue JSON
+  - Use `gh issue view <issue_number> --json number,title,body` to fetch issue details
+- Examples of PR titles:
+  - `feat: #123 - Add user authentication`
+  - `bug: #456 - Fix login validation error`
+  - `chore: #789 - Update dependencies`
+
+### PR Body Structure
+
+The PR body should communicate the **why** and **what**, not duplicate information already visible in the PR interface. Include these sections in this order:
+
+#### 1. Summary (Purpose & Context)
+**Explain the "why"** - business reason, goals, and impact of the change.
+
+- Describe the problem being solved or feature being added
+- Explain the business or technical rationale (don't assume reviewer context)
+- Keep it concise but complete (1-3 sentences is often sufficient)
+- Example: "Adds email verification flow required for HIPAA compliance (see #456). Users receive verification emails during signup and must verify before accessing protected data."
+
+#### 2. Review Focus
+**Highlight what reviewers should pay attention to.** This is where you add genuine value beyond code review.
+
+Include:
+- **Files to review in priority order** (for complex PRs): "Start with `auth.ts` for the core logic, then `utils.ts` for the helper functions"
+- **Architectural decisions made**: "Chose async/await over promises for clarity; added caching layer to reduce DB queries"
+- **Potential gotchas or edge cases**: "Error handling for expired tokens; special case for admin users who skip verification"
+- **Breaking changes** (if any): "Endpoint `/api/auth/verify` requires email parameter; old `/api/auth/check` is deprecated"
+
+Do NOT include:
+- Generic placeholder text like "Please review carefully" or "Look for bugs"
+- Line-by-line code explanations (those belong in code comments)
+- Generic section headers without substance
+
+Example Review Focus:
+```
+## Review Focus
+
+**Files to review (in order):**
+1. `src/auth.ts` - Core verification logic
+2. `src/email.ts` - Email delivery and retry logic
+3. `tests/auth.test.ts` - Edge cases for expired/invalid tokens
+
+**Key decisions:**
+- Used async/await pattern for clarity (vs Promise chains)
+- Implemented retry logic for transient email failures
+- Added grace period for token expiration (5 minutes) for slow networks
+
+**Edge cases to verify:**
+- Expired tokens during verification flow
+- Admin users who can skip verification
+- Race conditions if user attempts multiple verifications
+```
+
+#### 3. References
+- **Reference to the issue**: `Closes #<issue_number>` (automatic PR-to-issue linking)
+- **Link to implementation plan** (if applicable): Path to planning document (e.g., `See plans/implement-auth.md for detailed design`)
+- **Related PRs or documentation**: Link to dependent PRs or relevant docs
+
+#### 4. Testing Notes (Optional - Only if Non-Obvious)
+**Include ONLY if there are testing scenarios beyond what CI automation covers.**
+
+Include:
+- Manual test scenarios that CI can't automate (UAT, multi-browser testing, performance benchmarks)
+- Special workflows or edge cases requiring verification
+- Staging/production validation steps
+
+Do NOT include:
+- Test names or what CI tests cover (CI results are visible in the PR)
+- Generic statements like "All tests passing" or "Testing: Yes"
+- Standard test coverage (assume CI pipeline validates this)
+
+Example Testing Notes:
+```
+## Testing Notes
+
+Manual verification needed for:
+- Email delivery in staging (check SMTP logs for 2-3 test emails)
+- Token expiration flow in multi-tab scenario (open two browser windows, expire token in first window, verify second window detects it)
+- Admin user verification bypass (create admin test account, verify skip-verification flag works)
+```
+
+### What NOT to Include
+
+These belong elsewhere and waste reviewer time:
+
+- **❌ Separate "Commits" section**: Commit history is already visible in the PR's "Commits" tab. Summarize changes instead.
+  - Bad: "1. Add email verification logic\n2. Update database schema\n3. Add tests"
+  - Good: "Implements email verification with async/await pattern and database schema changes"
+
+- **❌ Test coverage documentation**: CI/CD pipeline results are visible in PR checks. Trust the automation.
+  - Bad: "Wrote 12 unit tests covering all edge cases. All tests passing."
+  - Good: (Only mention if manual testing is needed beyond CI)
+
+- **❌ Implementation details that belong in code**: Line-by-line code explanations, algorithm pseudocode, or logic flows.
+  - Bad: "Uses a for loop to iterate through users and validates each email"
+  - Good: (Add clarifying comments in the code itself)
+
+- **❌ Unverified assumptions about context**: Assume reviewers need context provided.
+  - Bad: "As discussed in the meeting yesterday"
+  - Good: "As outlined in the requirements doc (see project wiki link)"
+
+- **❌ Filler or boilerplate**: Empty sections or placeholder text.
+  - Bad: "## Changes\nSee commits for details" or "## Testing\nCI checks passed"
+  - Good: (Skip empty sections entirely)
+
+### Scope Guideline
+Keep PR descriptions concise—they should be **shorter than the actual code changes**, not longer. If your description is longer than the code, it likely contains information that belongs elsewhere (comments, docs, design docs).
 
 ## Run
 

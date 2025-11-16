@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Enhanced
+
+- `/create-pr` command instructions now enforce SDLC best practices
+  - **Explicit "DO NOT include" rules** to prevent common LLM-generated PR mistakes
+    - Prevents redundant commit listings (already visible in PR's Commits tab)
+    - Prevents manual testing documentation (CI/CD automation is the source of truth)
+    - Prevents boilerplate and placeholder sections
+  - **Detailed Review Focus guidance** with concrete examples
+    - Specifies files to review in priority order
+    - Highlights architectural decisions and gotchas
+    - Shows what adds value vs. placeholder text
+  - **Clarified Testing Notes scope** with examples
+    - Only include scenarios beyond CI automation (UAT, multi-browser, performance)
+    - Examples of what is/isn't "non-obvious"
+  - **Scope guidelines** to keep descriptions concise
+    - PR descriptions should be shorter than code changes
+    - Forces focus on truly important information
+  - See `research/pr-description-best-practices.md` for authoritative sources and deeper context
+
 ## [1.2.0] - 2025-10-31
 
 ### Added

@@ -69,7 +69,7 @@ Auto-detect, analyze, and fix CI/CD failures.
 
 ### `/create-pr`
 
-Create GitHub Pull Request with proper formatting and context.
+Create GitHub Pull Request with proper formatting and SDLC best practices.
 
 **Usage:**
 ```bash
@@ -82,7 +82,12 @@ Create GitHub Pull Request with proper formatting and context.
 1. **Fetches issue details**: Uses `gh issue view` to get issue info
 2. **Generates PR title**: Format: `<issue_type>: #<issue_number> - <issue_title>`
    - Examples: `feat: #123 - Add user authentication`, `bug: #456 - Fix login error`
-3. **Creates PR body**: Includes summary, plan link, issue reference, checklist, and changes
+3. **Creates PR body with SDLC best practices**:
+   - **Summary**: Explains the "why" and business context
+   - **Review Focus**: Highlights architectural decisions, gotchas, and file review order
+   - **Testing Notes**: Only for manual scenarios beyond CI automation
+   - **References**: Links to issue, plan, and related documentation
+   - Explicitly avoids redundant commit listings and generic testing documentation
 4. **Reviews changes**: Shows git diff and commit history
 5. **Pushes and creates**: Pushes branch and creates PR with `gh pr create`
 6. **Returns PR URL**: Outputs only the PR URL for easy access
@@ -91,9 +96,20 @@ Create GitHub Pull Request with proper formatting and context.
 ```bash
 $ /create-pr 123 docs/implementation-plan.md
 
-# Reviews changes, creates PR, returns:
+# Reviews changes, creates PR with best-practice formatting, returns:
 https://github.com/user/repo/pull/456
 ```
+
+**Best Practices (Enforced in Instructions):**
+- ✅ Explains the "why" and business rationale
+- ✅ Summarizes changes without listing every commit
+- ✅ Highlights review focus: files, architecture decisions, gotchas
+- ✅ Includes testing notes only for non-obvious scenarios
+- ❌ No redundant commit sections (visible in PR's Commits tab)
+- ❌ No generic testing documentation (CI/CD pipeline is authoritative)
+- ❌ No boilerplate or placeholder sections
+
+See `research/pr-description-best-practices.md` for research-backed guidance and authoritative sources.
 
 ### `/address-pr-comments`
 
