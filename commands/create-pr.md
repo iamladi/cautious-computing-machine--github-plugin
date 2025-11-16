@@ -70,8 +70,19 @@ Example Review Focus:
 
 #### 3. References
 - **Reference to the issue**: `Closes #<issue_number>` (automatic PR-to-issue linking)
-- **Link to implementation plan** (if applicable): Path to planning document (e.g., `See plans/implement-auth.md for detailed design`)
+- **Link to implementation plan**: Extract from plan file parameter
+  - If plan file provided: Include "See `plans/filename.md` for full implementation design"
+  - Extract research links from plan frontmatter if available
 - **Related PRs or documentation**: Link to dependent PRs or relevant docs
+
+**Example:**
+```
+## Plan & Design
+See [`plans/add-oauth2-auth.md`](../plans/add-oauth2-auth.md) for full implementation design and validation criteria.
+
+Related research:
+- [`research/auth-flow.md`](../research/auth-flow.md)
+```
 
 #### 4. Testing Notes (Optional - Only if Non-Obvious)
 **Include ONLY if there are testing scenarios beyond what CI automation covers.**
@@ -125,10 +136,22 @@ Keep PR descriptions concise—they should be **shorter than the actual code cha
 
 ## Run
 
-1. Run `git log origin/main..HEAD --oneline` to understand the commits being included
-2. Run `git push -u origin <branch_name>` to push the branch
-3. Run `gh pr create --title "<pr_title>" --body "<pr_body>" --base main` to create the PR
-4. Capture the PR URL from the output
+1. **Fetch Issue details**: `gh issue view <issue_number> --json number,title,body,labels`
+2. **Read plan file** (if provided):
+   - Parse YAML frontmatter to extract `type`, `research` fields
+   - Extract key sections: Overview, Implementation Plan phases
+3. **Generate PR title**: `<type>: #<issue_number> - <issue_title>`
+   - Use type from plan frontmatter (defaults to issue labels if not in plan)
+4. **Generate PR body**:
+   - Summary: From plan's Overview section
+   - Review Focus: Key decisions from Implementation Plan
+   - Plan & Design: Link to plan file + research files
+   - References: `Closes #<issue_number>` + plan link
+   - Testing Notes: Only if non-obvious (from plan's Testing Strategy)
+5. Run `git log origin/main..HEAD --oneline` to understand the commits being included
+6. Run `git push -u origin <branch_name>` to push the branch
+7. Run `gh pr create --title "<pr_title>" --body "<pr_body>" --base main` to create the PR
+8. Capture the PR URL from the output
 
 ## Report
 

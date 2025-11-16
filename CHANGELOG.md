@@ -5,7 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2024-11-16
+
+### Added
+
+- **New `/github:create-issue-from-plan` command** - Converts plans into GitHub Issues
+  - Parses plan YAML frontmatter (title, type, research, etc.)
+  - Extracts Implementation Phases as checklist items
+  - Creates Issue with plan Overview as summary
+  - Includes Validation Commands section
+  - Links research files from plan frontmatter
+  - Updates plan frontmatter with Issue number after creation
+  - Commits Issue linkage back to plan file
+
+### Enhanced
+
+- `/create-pr` command now extracts and links plan information
+  - Extracts plan type from frontmatter for PR labels
+  - Links plan file in PR body: `See plans/file.md for full design`
+  - Includes research file links from plan metadata
+  - Generates Review Focus from Implementation Plan phases
+  - Automatically references Testing Strategy from plan
+  - Generates PR title with plan type: `<type>: #<issue> - Title`
+
+### Benefits
+
+- Complete Plan → Issue → PR traceability chain
+- Plans drive Issue creation automatically
+- PR body automatically linked to source documentation
+- Single source of truth: Plan = specification
+- Reduced manual linking and documentation duplication
+
+## [1.2.1] - 2024-11-16
 
 ### Enhanced
 
