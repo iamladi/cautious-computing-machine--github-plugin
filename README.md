@@ -111,6 +111,56 @@ https://github.com/user/repo/pull/456
 
 See `research/pr-description-best-practices.md` for research-backed guidance and authoritative sources.
 
+### `/create-issue-from-plan`
+
+Convert implementation plans into GitHub Issues with automatic checkboxes and linking.
+
+**Usage:**
+```bash
+/create-issue-from-plan plans/feature-name.md
+```
+
+**What it does:**
+
+1. **Parses plan file**: Reads YAML frontmatter and markdown structure
+2. **Extracts content**:
+   - Overview section → Issue body summary
+   - Implementation Phases → Checklist items
+   - Validation Commands → Issue section
+   - Acceptance Criteria → Issue checklist
+   - Research files → Linked in Issue body
+3. **Creates Issue**: Generates GitHub Issue with:
+   - Title: `<type>: <plan title>`
+   - Body: Complete implementation checklist with all phases
+   - Labels: `status:planning` + type label (feat, bug, chore, etc.)
+4. **Updates plan file**: Adds Issue number to plan frontmatter (`issue: #123`)
+5. **Commits linkage**: Saves Issue reference in plan file via git commit
+
+**Plan Frontmatter:**
+```yaml
+---
+title: "Feature Description"
+type: Feature  # Bug|Feature|Chore|Refactor|Enhancement|Documentation
+issue: null    # Auto-populated with Issue #123 after creation
+research:
+  - research/related-research.md
+status: Draft
+created: 2024-11-16
+---
+```
+
+**Example:**
+```bash
+$ /create-issue-from-plan plans/add-oauth2-auth.md
+
+✅ Issue #456 created from plan
+📝 Updated plan frontmatter: issue: 456
+🔗 Linked research files in Issue body
+💾 Committed Issue linkage to plan file
+
+Issue: https://github.com/user/repo/issues/456
+```
+
 ### `/address-pr-comments`
 
 Interactive or autonomous workflow for addressing PR review comments with AI-powered confidence scoring.
