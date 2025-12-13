@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2025-12-13
+
+### Added
+
+- **Autonomous CI Fix Loop** (`/fix-ci --loop` or `/fix-ci --auto`)
+  - Runs up to 10 fix-commit-push-wait cycles automatically
+  - Fully autonomous operation with no user prompts
+  - Background CI monitoring (polls every 60 seconds)
+  - Detailed history report on completion
+  - Early abort if same errors appear twice consecutively
+
+- **New `ci-monitor` agent**
+  - Lightweight haiku-based CI status poller
+  - Token-efficient (~50 tokens per poll vs ~500 for sonnet)
+  - Runs in background to free terminal
+  - Returns: SUCCESS, FAILURE, CANCELLED, or TIMEOUT
+
+- **New `ci-fix-loop` skill**
+  - Orchestrates the full autonomous loop
+  - State tracking: attempt count, error history, run IDs
+  - Smart progress detection to avoid infinite loops
+  - Comprehensive final reporting
+
+### Safety Features
+
+- Blocks on main/master branches (must use feature branch)
+- Stashes uncommitted changes before starting
+- Maximum 30 minute wait per CI run
+- Maximum 10 retry attempts
+- Detailed commit history for easy revert
+
+### Token Efficiency
+
+- ~6,000 tokens per iteration (vs ~15,000 without optimization)
+- Haiku model for CI polling saves ~90% on wait cycles
+- No context accumulation between iterations
+- Background execution frees terminal for other work
+
 ## [1.3.1] - 2024-11-16
 
 ### Fixed
