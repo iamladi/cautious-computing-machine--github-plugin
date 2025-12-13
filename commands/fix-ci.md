@@ -9,12 +9,55 @@ Auto-detect, analyze, and fix CI/CD failures on any branch using GitHub CLI and 
 ## Usage
 
 ```bash
-/fix-ci              # Current branch
-/fix-ci 123          # PR number
-/fix-ci https://...  # PR URL
+/fix-ci              # Current branch (single fix)
+/fix-ci 123          # PR number (single fix)
+/fix-ci https://...  # PR URL (single fix)
+/fix-ci --loop       # Autonomous loop mode (up to 10 retries)
+/fix-ci --auto       # Alias for --loop
+/fix-ci 123 --loop   # Loop mode for specific PR
 ```
 
 User provided: `$ARGUMENTS`
+
+## Autonomous Loop Mode
+
+When `--loop` or `--auto` flag is present, this command runs in autonomous mode using the `ci-fix-loop` skill.
+
+**Detection:**
+```bash
+ARGS="$ARGUMENTS"
+if [[ "$ARGS" == *"--loop"* ]] || [[ "$ARGS" == *"--auto"* ]]; then
+  # Extract PR number if provided (e.g., "123 --loop" → "123")
+  PR_NUM=$(echo "$ARGS" | grep -oE '^[0-9]+' || echo "")
+
+  # Invoke ci-fix-loop skill
+  # The skill will handle the full autonomous loop:
+  # 1. Analyze CI errors
+  # 2. Apply fixes
+  # 3. Commit and push
+  # 4. Monitor CI in background (polling every 60s)
+  # 5. If CI fails, repeat (up to 10 times)
+  # 6. Report final status
+
+  # IMPORTANT: Do not proceed with single-fix workflow below
+fi
+```
+
+**Behavior:**
+- Runs up to 10 fix-commit-push-wait cycles
+- Fully autonomous (no user prompts)
+- Background CI monitoring between iterations
+- Reports detailed history when complete
+- Aborts if same errors appear twice consecutively
+
+**Safety:**
+- Will not run on main/master branch
+- Stashes uncommitted changes before starting
+- Maximum 30 minute wait per CI run
+
+---
+
+When NOT in loop mode, proceed with single-fix workflow below.
 
 ## Workflow
 
