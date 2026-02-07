@@ -1,7 +1,7 @@
 ---
 title: "Fix create-pr leaking Commits and Test Plan sections"
 type: Enhancement
-issue: null
+issue: 10
 research:
   - research/research-sdlc-submit-pr-description.md
   - research/pr-description-best-practices.md
