@@ -1,6 +1,6 @@
 {
   "name": "github",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "GitHub CI/CD automation plugin with autonomous fix loops, PR workflows, and code review",
   "author": {
     "name": "Ladislav Martincik",

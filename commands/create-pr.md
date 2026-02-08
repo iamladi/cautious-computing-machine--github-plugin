@@ -84,27 +84,19 @@ Related research:
 - [`research/auth-flow.md`](../research/auth-flow.md)
 ```
 
-#### 4. Testing Notes (Optional - Only if Non-Obvious)
-**Include ONLY if there are testing scenarios beyond what CI automation covers.**
+#### 4. Testing Notes (Default: Omit)
+**Omit this section entirely unless** you need to:
+- Request a specific manual action from the reviewer (e.g., test in staging, verify multi-browser behavior)
+- Report manual verification you performed that CI cannot cover (e.g., "Verified on iOS Safari")
 
-Include:
-- Manual test scenarios that CI can't automate (UAT, multi-browser testing, performance benchmarks)
-- Special workflows or edge cases requiring verification
-- Staging/production validation steps
+If all testing is automated (unit tests, integration tests, linting, type checks), do NOT include this section.
 
-Do NOT include:
-- Test names or what CI tests cover (CI results are visible in the PR)
-- Generic statements like "All tests passing" or "Testing: Yes"
-- Standard test coverage (assume CI pipeline validates this)
-
-Example Testing Notes:
+Example (only when needed):
 ```
 ## Testing Notes
 
-Manual verification needed for:
-- Email delivery in staging (check SMTP logs for 2-3 test emails)
-- Token expiration flow in multi-tab scenario (open two browser windows, expire token in first window, verify second window detects it)
-- Admin user verification bypass (create admin test account, verify skip-verification flag works)
+- Verified email delivery in staging (SMTP logs confirm 3 test emails sent)
+- Reviewer: please test token expiration in multi-tab scenario (open two browser windows, expire token in first, verify second detects it)
 ```
 
 ### What NOT to Include
@@ -147,11 +139,10 @@ Keep PR descriptions concise—they should be **shorter than the actual code cha
    - Review Focus: Key decisions from Implementation Plan
    - Plan & Design: Link to plan file + research files
    - References: `Closes #<issue_number>` + plan link
-   - Testing Notes: Only if non-obvious (from plan's Testing Strategy)
-5. Run `git log origin/main..HEAD --oneline` to understand the commits being included
-6. Run `git push -u origin <branch_name>` to push the branch
-7. Run `gh pr create --title "<pr_title>" --body "<pr_body>" --base main` to create the PR
-8. Capture the PR URL from the output
+   - Testing Notes: Only if manual reviewer action needed or manual verification to report (default: omit)
+5. Run `git push -u origin <branch_name>` to push the branch
+6. Run `gh pr create --title "<pr_title>" --body "<pr_body>" --base main` to create the PR
+7. Capture the PR URL from the output
 
 ## Report
 
