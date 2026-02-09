@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-02-09
+
+### Added
+
+- **`--swarm` flag for `/review-pr`** — opt-in agent team-based parallel PR review
+  - Spawns 4 specialized reviewer teammates: Security, Performance, Test Coverage, Architecture
+  - Cross-concern findings shared between reviewers via SendMessage
+  - Consolidated review with attribution markers (`[Security]`, `[Performance]`, etc.)
+  - Feature flag validation with graceful fallback to sequential mode
+  - Requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
+
+- **`--swarm` flag for `/fix-ci`** (ci-fix-loop skill) — parallel CI error fixing
+  - Partitions errors by file path after centralized analysis
+  - Spawns one teammate per file partition (max 4)
+  - Lead collects all changes into single commit + push
+  - Falls through to sequential mode for single-file errors
+  - Team created/torn down within single fix iteration
+
 ## [1.4.0] - 2025-12-13
 
 ### Added
