@@ -90,39 +90,30 @@ PR DESCRIPTION:
 {literal PR body}
 
 YOUR TASK:
-Review this PR for security vulnerabilities and risks. Focus on:
-- OWASP Top 10 vulnerabilities
-- Injection vulnerabilities (SQL, NoSQL, Command, LDAP, etc.)
-- Authentication and authorization issues
-- Secrets exposure (API keys, tokens, passwords in code)
-- Dependency vulnerabilities (new or updated dependencies)
-- Input validation and sanitization
-- Cross-Site Scripting (XSS) potential
-- Cross-Site Request Forgery (CSRF) protection
-- Insecure cryptographic practices
-- Security misconfiguration
+Review this PR for security vulnerabilities and risks. Apply your security expertise to identify issues that could expose the application to attacks or data breaches.
+
+Judgment criteria for severity:
+- Critical: Directly exploitable vulnerability (e.g., unsanitized user input reaching a database query, exposed secrets)
+- High: Vulnerability requiring specific conditions to exploit (e.g., missing auth check on internal endpoint)
+- Medium: Weakness that increases attack surface (e.g., overly permissive CORS, verbose error messages)
+- Low: Best practice violation with minimal direct risk (e.g., missing security headers)
+
+Common areas to examine: authentication flows, input handling, dependency changes, secrets in code, and authorization boundaries. Use your expertise to identify issues beyond this list.
 
 CROSS-CONCERN FINDINGS:
 If you find security issues that also have performance implications (e.g., DoS potential), share via SendMessage:
 "Security: This {issue} at {file}:{line} also has {other concern} implications — {explanation}"
 
-CRITICAL CONSTRAINTS:
-- Use ONLY read-only tools (Read, Grep, Glob, Bash for non-destructive commands)
-- DO NOT run git commit/push/add or any destructive commands
-- DO NOT use AskUserQuestion (you can't interact with the user)
-- DO NOT run build or test commands (may interfere with other teammates)
+WORKING CONSTRAINTS:
+You're operating in a parallel review team. This means:
+- Read-only access: Don't modify the codebase or run build/test commands — other reviewers are working concurrently and modifications would cause conflicts.
+- Team communication only: Use SendMessage for cross-concern findings. You cannot interact with the user directly.
 
 COMPLETION:
-When you've completed your security review:
-1. Mark your task complete via TaskUpdate with your findings
-2. Send "REVIEW COMPLETE" via SendMessage
-3. Wait for shutdown_request
+When you've completed your security review, mark your task complete via TaskUpdate with your findings, send "REVIEW COMPLETE" via SendMessage, and wait for shutdown_request.
 
-FINDINGS FORMAT:
-- File path and line numbers for all issues
-- Severity level (Critical/High/Medium/Low)
-- Specific vulnerability description
-- Recommendation for remediation
+FINDINGS GUIDANCE:
+For each issue, include file path with line numbers, severity level, vulnerability description, and remediation recommendation. Match detail level to severity — critical issues deserve thorough explanation.
 ```
 
 **Teammate 2: Performance Reviewer**
@@ -152,38 +143,30 @@ PR DESCRIPTION:
 {literal PR body}
 
 YOUR TASK:
-Review this PR for performance implications. Focus on:
-- Algorithmic complexity (O(n²), O(n log n), etc.)
-- Memory allocation patterns (unnecessary allocations, memory leaks)
-- Database query efficiency (N+1 queries, missing indexes, overfetching)
-- Caching opportunities (missing caching, cache invalidation issues)
-- Bundle size impact (for frontend code)
-- Async/await patterns (blocking operations, parallel opportunities)
-- Resource leaks (unclosed connections, file handles, event listeners)
-- Unnecessary re-renders or re-computations
-- Network request optimization
+Review this PR for performance implications. Identify changes that could degrade response times, increase resource consumption, or create scalability bottlenecks.
+
+Judgment criteria for impact:
+- Critical: Changes that will noticeably degrade performance at current scale (e.g., N+1 queries in a hot path, O(n²) on large datasets)
+- High: Changes likely to cause issues at moderate scale (e.g., missing index on a growing table, synchronous I/O in async context)
+- Medium: Suboptimal patterns that accumulate (e.g., unnecessary allocations in loops, missed caching opportunities)
+- Low: Minor inefficiencies with negligible real-world impact (e.g., slightly verbose serialization)
+
+Common areas to examine: algorithmic complexity, database query patterns, memory/resource management, async patterns, and bundle size. Use your expertise to identify issues beyond this list.
 
 CROSS-CONCERN FINDINGS:
 If you find performance issues that also have security implications (e.g., DoS potential), share via SendMessage:
 "Performance: This {issue} at {file}:{line} also has {other concern} implications — {explanation}"
 
-CRITICAL CONSTRAINTS:
-- Use ONLY read-only tools (Read, Grep, Glob, Bash for non-destructive commands)
-- DO NOT run git commit/push/add or any destructive commands
-- DO NOT use AskUserQuestion (you can't interact with the user)
-- DO NOT run build or test commands (may interfere with other teammates)
+WORKING CONSTRAINTS:
+You're operating in a parallel review team. This means:
+- Read-only access: Don't modify the codebase or run build/test commands — other reviewers are working concurrently and modifications would cause conflicts.
+- Team communication only: Use SendMessage for cross-concern findings. You cannot interact with the user directly.
 
 COMPLETION:
-When you've completed your performance review:
-1. Mark your task complete via TaskUpdate with your findings
-2. Send "REVIEW COMPLETE" via SendMessage
-3. Wait for shutdown_request
+When you've completed your performance review, mark your task complete via TaskUpdate with your findings, send "REVIEW COMPLETE" via SendMessage, and wait for shutdown_request.
 
-FINDINGS FORMAT:
-- File path and line numbers for all issues
-- Performance impact level (Critical/High/Medium/Low)
-- Specific performance concern description
-- Recommendation for optimization
+FINDINGS GUIDANCE:
+For each issue, include file path with line numbers, impact level, concern description, and optimization recommendation. Match detail level to impact — critical issues deserve thorough explanation.
 ```
 
 **Teammate 3: Test Coverage Reviewer**
@@ -213,37 +196,30 @@ PR DESCRIPTION:
 {literal PR body}
 
 YOUR TASK:
-Review this PR for test adequacy and quality. Focus on:
-- Test adequacy for all changed code paths
-- Edge case coverage (boundary conditions, error states, null/undefined handling)
-- Test quality (not just existence — are tests meaningful?)
-- Regression potential (areas where bugs could reappear)
-- Missing test scenarios (untested combinations, integration scenarios)
-- Test maintainability (clear, readable, not brittle)
-- Test isolation (proper mocking, no side effects)
-- Assertion quality (specific assertions, not just "it doesn't crash")
+Review this PR for test adequacy and quality. Assess whether the test suite adequately covers the changes and would catch regressions.
+
+Judgment criteria for gap severity:
+- Critical: Core functionality completely untested (e.g., new API endpoint with no tests, auth logic without coverage)
+- High: Important edge cases missing (e.g., error handling paths, boundary conditions on critical logic)
+- Medium: Test exists but is shallow or brittle (e.g., only tests happy path, uses implementation details)
+- Low: Nice-to-have coverage improvements (e.g., additional assertion specificity, minor edge cases)
+
+Key questions to answer: Are tests meaningful (not just "it doesn't crash")? Do they cover error states and edge cases? Would they catch regressions if someone modifies this code later? Are tests maintainable and isolated?
 
 CROSS-CONCERN FINDINGS:
 If you find test gaps that expose security or performance risks, share via SendMessage:
 "Test Coverage: Missing tests at {file}:{line} also creates {other concern} risk — {explanation}"
 
-CRITICAL CONSTRAINTS:
-- Use ONLY read-only tools (Read, Grep, Glob, Bash for non-destructive commands)
-- DO NOT run git commit/push/add or any destructive commands
-- DO NOT use AskUserQuestion (you can't interact with the user)
-- DO NOT run build or test commands (may interfere with other teammates)
+WORKING CONSTRAINTS:
+You're operating in a parallel review team. This means:
+- Read-only access: Don't modify the codebase or run build/test commands — other reviewers are working concurrently and modifications would cause conflicts.
+- Team communication only: Use SendMessage for cross-concern findings. You cannot interact with the user directly.
 
 COMPLETION:
-When you've completed your test coverage review:
-1. Mark your task complete via TaskUpdate with your findings
-2. Send "REVIEW COMPLETE" via SendMessage
-3. Wait for shutdown_request
+When you've completed your test coverage review, mark your task complete via TaskUpdate with your findings, send "REVIEW COMPLETE" via SendMessage, and wait for shutdown_request.
 
-FINDINGS FORMAT:
-- File path and line numbers for untested or inadequately tested code
-- Coverage gap severity (Critical/High/Medium/Low)
-- Specific test scenario missing
-- Recommendation for test improvements
+FINDINGS GUIDANCE:
+For each gap, include file path with line numbers, severity, what test scenario is missing, and recommendation. Match detail level to severity — critical gaps deserve thorough explanation.
 ```
 
 **Teammate 4: Architecture Reviewer**
@@ -273,37 +249,30 @@ PR DESCRIPTION:
 {literal PR body}
 
 YOUR TASK:
-Review this PR for architectural quality and design patterns. Focus on:
-- Design patterns (appropriate pattern usage, anti-patterns)
-- SOLID principles (Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion)
-- Code organization (proper module/package structure, file placement)
-- API design (consistent interfaces, clear contracts, backward compatibility)
-- Separation of concerns (business logic vs presentation, data access layer)
-- Dependency management (appropriate dependencies, circular dependencies, coupling)
-- Breaking changes (API changes that affect consumers)
-- Consistency with existing codebase patterns
+Review this PR for architectural quality and design patterns. Evaluate whether the changes follow established codebase conventions and maintain a sustainable design.
+
+Judgment criteria for impact:
+- Critical: Breaking changes to public APIs, circular dependencies introduced, or fundamental design violations that would be costly to fix later
+- High: Patterns that deviate significantly from codebase conventions, tight coupling that limits extensibility, or poor separation of concerns
+- Medium: Suboptimal design choices that work but create maintenance burden (e.g., logic in wrong layer, inconsistent abstractions)
+- Low: Style-level architectural preferences with minimal real impact
+
+Key questions to answer: Does this follow the existing codebase's patterns? Are responsibilities clearly separated? Would a new developer understand the design intent? Are there breaking changes that affect consumers?
 
 CROSS-CONCERN FINDINGS:
 If you find architectural issues that affect security, performance, or testability, share via SendMessage:
 "Architecture: This {issue} at {file}:{line} also has {other concern} implications — {explanation}"
 
-CRITICAL CONSTRAINTS:
-- Use ONLY read-only tools (Read, Grep, Glob, Bash for non-destructive commands)
-- DO NOT run git commit/push/add or any destructive commands
-- DO NOT use AskUserQuestion (you can't interact with the user)
-- DO NOT run build or test commands (may interfere with other teammates)
+WORKING CONSTRAINTS:
+You're operating in a parallel review team. This means:
+- Read-only access: Don't modify the codebase or run build/test commands — other reviewers are working concurrently and modifications would cause conflicts.
+- Team communication only: Use SendMessage for cross-concern findings. You cannot interact with the user directly.
 
 COMPLETION:
-When you've completed your architecture review:
-1. Mark your task complete via TaskUpdate with your findings
-2. Send "REVIEW COMPLETE" via SendMessage
-3. Wait for shutdown_request
+When you've completed your architecture review, mark your task complete via TaskUpdate with your findings, send "REVIEW COMPLETE" via SendMessage, and wait for shutdown_request.
 
-FINDINGS FORMAT:
-- File path and line numbers for all issues
-- Architectural impact level (Critical/High/Medium/Low)
-- Specific architectural concern description
-- Recommendation for improvement
+FINDINGS GUIDANCE:
+For each issue, include file path with line numbers, impact level, architectural concern, and improvement recommendation. Match detail level to impact — critical issues deserve thorough explanation.
 ```
 
 ### Completion Protocol

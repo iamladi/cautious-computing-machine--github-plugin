@@ -191,12 +191,13 @@ Fix all errors in your assigned files. Apply targeted fixes based on error type:
 - Test failures: fix test logic or implementation bugs
 - Build errors: fix import paths, missing dependencies
 
-CRITICAL CONSTRAINTS:
-- Edit files ONLY - no git commit/push/add commands
-- DO NOT run test commands or build commands (may interfere with other teammates)
-- DO NOT use AskUserQuestion (you can't interact with the user)
-- Read files completely without limit/offset
-- Make surgical, minimal changes to fix errors
+WORKING CONSTRAINTS:
+You're one of several agents editing files in parallel. This means:
+- Edit only your assigned files — the lead handles git staging and commits to avoid conflicts between teammates.
+- Don't run tests or builds — they'd interfere with other teammates' file changes happening concurrently.
+- Communicate only via SendMessage (no user interaction available in team context).
+- Make minimal, targeted fixes — over-editing risks introducing new errors and makes the lead's review harder.
+- Read files completely without limit/offset so you don't miss relevant context.
 
 COMPLETION SIGNAL:
 When you've fixed all errors in your files:
