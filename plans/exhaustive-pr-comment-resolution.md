@@ -1,7 +1,7 @@
 ---
 title: "Exhaustive PR Comment Resolution with Mandatory Replies"
 type: Enhancement
-issue: null
+issue: 13
 research: ["research/research-address-pr-comments-improvement.md"]
 status: Ready for Implementation
 reviewed: true
