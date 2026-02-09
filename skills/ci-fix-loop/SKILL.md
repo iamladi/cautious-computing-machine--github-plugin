@@ -11,8 +11,16 @@ Orchestrates autonomous CI repair: analyze → fix → commit → push → monit
 
 This skill is invoked when:
 - User runs `/fix-ci --loop` or `/fix-ci --auto`
+- User runs `/fix-ci --swarm`
 - Multiple CI fix iterations are needed
 - User wants hands-off CI repair
+
+## Argument Parsing
+
+The command arguments may contain optional flags that modify the fix loop behavior:
+- Extract `--swarm` flag if present (indicates user wants parallel team-based fixing)
+- Extract `--loop` or `--auto` flags (standard autonomous mode)
+- The flags can be combined with other arguments
 
 ## Configuration
 
@@ -127,18 +135,125 @@ if current_errors is empty:
 
 #### Step 2.5: Apply Fixes
 
-Invoke the `ci-error-fixer` agent with error list:
+**Condition Check**: Determine fix strategy based on error distribution and `--swarm` flag:
+
+```
+file_count = count of distinct files with errors
+use_swarm = (file_count >= 2) AND (--swarm flag is set)
+```
+
+**If use_swarm is FALSE** (errors in single file OR --swarm not requested):
+- Invoke the `ci-error-fixer` agent with error list
 - Applies targeted fixes based on error type
 - Shows diffs for each change
 - Reports fixed vs flagged-for-manual-review counts
+- Track results:
+  ```
+  errors_fixed = count of successfully fixed errors
+  errors_flagged = count of errors needing manual review
+  ```
 
-Track results:
+**If use_swarm is TRUE** (2+ files with errors AND --swarm flag set):
+
+**Team Prerequisites and Fallback**:
+
+Attempt to create the agent team using `TeamCreate` with a unique timestamped name: `fix-ci-{YYYYMMDD-HHMMSS}` and description: "CI Fix Attempt {attempt}".
+
+If team creation fails (tool unavailable or experimental features disabled), inform the user that swarm mode requires agent teams to be enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in settings.json), then fall back to the standard (non-swarm) fix approach using the existing `ci-error-fixer` agent as above.
+
+**Partitioning Strategy** (performed by lead after centralized analysis in Step 2.3):
+
+1. Group errors by file path (deterministic: sort errors by file path first)
+2. If >4 distinct files, group by directory proximity to create max 4 partitions
+3. Non-file-specific errors (dependency resolution, config issues, flaky tests without clear file association) remain with lead for sequential handling
+4. Each partition contains: error list for those files, file paths, error types and messages
+
+**Teammate Spawn Protocol** (max 4 teammates, one per file partition):
+
+Spawn each teammate via the `Task` tool with `team_name` parameter and `subagent_type: "general-purpose"`. Each teammate prompt MUST include as string literals:
+
 ```
-errors_fixed = count of successfully fixed errors
+You are fixing CI errors for a specific set of files as part of a parallel fix team.
+
+YOUR FILE PARTITION:
+{list of file paths assigned to this teammate}
+
+ERRORS TO FIX:
+{error list for your files - type, file, line, message}
+
+FILE CONTENTS:
+{Read and include relevant file contents}
+
+YOUR TASK:
+Fix all errors in your assigned files. Apply targeted fixes based on error type:
+- Lint errors: auto-fix with formatter/linter where possible
+- Type errors: add type annotations, fix type mismatches
+- Test failures: fix test logic or implementation bugs
+- Build errors: fix import paths, missing dependencies
+
+CRITICAL CONSTRAINTS:
+- Edit files ONLY - no git commit/push/add commands
+- DO NOT run test commands or build commands (may interfere with other teammates)
+- DO NOT use AskUserQuestion (you can't interact with the user)
+- Read files completely without limit/offset
+- Make surgical, minimal changes to fix errors
+
+COMPLETION SIGNAL:
+When you've fixed all errors in your files:
+1. Send "FIX COMPLETE" via SendMessage
+2. Wait for shutdown_request
+
+ERROR TYPES AND HANDLING:
+{specific guidance based on error types in this partition}
+```
+
+**Completion Protocol**:
+
+Wait for all teammates to signal completion by sending "FIX COMPLETE" messages. Timeout: 10 minutes from teammate spawn time.
+
+If timeout occurs, proceed with available fixes and note which teammates timed out.
+
+**Lead Collects Changes**:
+
+After all teammates complete (or timeout), the lead stages ALL changes in a single commit and single push:
+
+```bash
+git add .
+
+git commit -m "fix(ci): automated swarm fix attempt ${attempt}
+
+Errors addressed across ${file_count} files:
+- ${error_summary_list}
+
+Attempt ${attempt} of ${max_attempts} (ci-fix-loop with swarm)"
+```
+
+This replaces the per-error serial commits from the non-swarm approach.
+
+**Resource Cleanup**:
+
+Always execute cleanup regardless of success or failure:
+1. Send shutdown requests to all teammates via `SendMessage` with `type: "shutdown_request"`
+2. Wait briefly for confirmations
+3. Call `TeamDelete` to remove the team
+
+If cleanup fails, log warning: "Team cleanup incomplete. You may need to check for lingering team resources."
+
+Execute cleanup before proceeding to Step 2.6.
+
+**Track Results**:
+```
+errors_fixed = count of successfully fixed errors across all teammates
 errors_flagged = count of errors needing manual review
 ```
 
+**Note**: The team is created and torn down within this single fix iteration (Step 2.5). The outer loop (Phase 2) continues as normal after this step completes.
+
 #### Step 2.6: Commit & Push
+
+**Note**: If swarm mode was used in Step 2.5, the commit and push were already performed by the lead after collecting teammate changes. Skip this step and proceed to Step 2.7.
+
+**Otherwise** (standard non-swarm mode):
 
 Stage and commit changes:
 ```bash
@@ -315,6 +430,7 @@ echo "Pull and retry: git pull --rebase && /fix-ci --loop"
 4. **Progress detection**: Abort if same errors repeat twice
 5. **Timeout limits**: 30 min max CI wait per attempt
 6. **Commit tracking**: Report all commits for easy revert
+7. **Swarm mode constraints**: When using `--swarm`, teammates are restricted to file editing only - they cannot run git commands (commit/push/add), test commands, build commands, or use AskUserQuestion. This prevents coordination issues and ensures the lead maintains control of the git workflow.
 
 ## Token Efficiency
 
