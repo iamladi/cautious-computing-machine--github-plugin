@@ -1,197 +1,239 @@
 ---
-description: Interactive PR comment resolution workflow
+description: Interactive or autonomous PR comment resolution with mandatory replies
 ---
 
 # Address PR Comments Command
 
-Interactive PR comment resolution workflow for addressing reviewer feedback efficiently.
+Comprehensive PR comment resolution workflow that addresses reviewer feedback and posts replies to GitHub for every comment.
 
 User provided: `$ARGUMENTS`
 
-## Workflow
+## Workflow Overview
 
-### 1. Fetch PR Data
+This command fetches all PR comments, processes them according to mode (interactive/autonomous), applies fixes where possible, and **posts a reply to GitHub for every comment** — ensuring no feedback is left unacknowledged.
 
-Extract PR number from arguments (could be number like "18" or URL like "https://github.com/owner/repo/pull/123").
+## Phase 1: Preflight Checks and Comment Fetching
 
-```bash
-# Get PR details and comments
-gh pr view {PR_NUMBER} --json title,body,state,author,headRefName,baseRefName,url,reviews
+### 1.1 Preflight Checks
 
-# Get PR review comments (file/line comments)
-gh api repos/{OWNER}/{REPO}/pulls/{PR_NUMBER}/comments
+Before any processing, verify the environment is ready. These checks prevent partial failures mid-processing (e.g., committing without git identity, posting replies without auth, or accidentally staging uncommitted work alongside PR fixes).
 
-# Get issue comments (general PR comments)
-gh api repos/{OWNER}/{REPO}/issues/{PR_NUMBER}/comments
+1. **`gh auth status`** — The command posts replies to GitHub. Without authentication, it would process comments and apply fixes but fail silently when posting. Abort early with "Not authenticated. Run: gh auth login"
+2. **`git status --porcelain`** — The command creates per-fix commits. If the working tree is dirty, those unrelated changes could get accidentally staged alongside PR fixes. Abort with "Working tree has uncommitted changes. Stash or commit changes first."
+3. **`git config user.name` and `git config user.email`** — Required for creating commits. Without these, git will either fail or create commits with no author. Abort with instructions to configure.
 
-# Checkout PR branch
-gh pr checkout {PR_NUMBER}
-```
+Fail fast on any of these — proceeding would cause confusing partial failures later.
 
-### 2. Analyze Comments
+### 1.2 Extract PR Information
 
-Parse fetched comments and:
-- Filter actionable comments (exclude author's own comments, focus on file/line refs)
-- Read affected files for context
-- Categorize by type:
-  - **CODE**: Logic changes, bug fixes, refactoring suggestions
-  - **STYLE**: Formatting, naming conventions, code style
-  - **DOCS**: Documentation improvements, comment clarity
-  - **TEST**: Test coverage, test improvements
-  - **QUESTIONS**: Clarifications needed
+Parse `$ARGUMENTS` to extract PR number and determine repository context:
 
-### 2.5. Score Comments for Autonomous Mode
+- If argument is a number (e.g., "123"): Use as PR number
+- If argument is a GitHub URL (e.g., "https://github.com/owner/repo/pull/123"): Extract PR number
+- If no argument: Abort with error "PR number or URL required"
 
-For each actionable comment, calculate confidence score (0-100) based on multiple factors:
+Determine repository owner and name from current directory or URL.
 
-**Scoring Factors:**
+### 1.3 Fetch All Comment Types
 
-1. **Specificity** (0-30 points):
-   - Has file path AND line number: +20 points
-   - Has concrete code suggestion or example: +10 points
-   - Vague or general comment: +0 points
-
-2. **Language Clarity** (0-25 points):
-   - Directive language ("Please change", "Must fix", "Should use"): +25 points
-   - Suggestion language ("Consider", "Maybe", "Could"): +15 points
-   - Question only ("Why did you...?"): +5 points
-
-3. **Category Confidence** (0-25 points):
-   - **STYLE** (formatting, naming): +25 points (highly automatable)
-   - **DOCS** (documentation, comments): +20 points
-   - **CODE** (logic, refactoring): +15 points (needs more care)
-   - **TEST** (test coverage): +10 points
-   - **QUESTIONS** (clarifications): +5 points
-
-4. **Reviewer Authority** (0-10 points):
-   - Maintainer or repository owner: +10 points
-   - Core contributor: +7 points
-   - Other contributors: +3 points
-
-5. **Discussion Status** (0-10 points):
-   - Marked as "CHANGES_REQUESTED" or blocking: +10 points
-   - Unresolved discussion: +7 points
-   - Already resolved: +0 points (skip)
-
-**Confidence Thresholds:**
-
-- **High (80-100)**: Auto-address in autonomous mode
-  - Clear, specific, safe changes with concrete suggestions
-  - Example: "Use const instead of let on line 42"
-
-- **Medium (60-79)**: Present to user in interactive mode
-  - Reasonable suggestions but need human judgment
-  - Example: "Consider extracting this logic into a separate function"
-
-- **Low (0-59)**: Skip or flag for manual review
-  - Vague, ambiguous, or complex changes
-  - Example: "This approach might have performance issues"
-
-**Scoring Examples:**
-
-```
-Comment: "Please use const instead of let for maxRetries on line 42"
-- Specificity: 30 (file+line+suggestion)
-- Language: 25 (directive)
-- Category: 25 (STYLE)
-- Authority: 10 (maintainer)
-- Status: 10 (CHANGES_REQUESTED)
-= TOTAL: 100 → High confidence, auto-address
-
-Comment: "Consider refactoring this method for better readability"
-- Specificity: 0 (no location, vague)
-- Language: 15 (suggestion)
-- Category: 15 (CODE)
-- Authority: 3 (contributor)
-- Status: 7 (unresolved)
-= TOTAL: 40 → Low confidence, skip
-
-Comment: "Add null check before accessing user.email on line 120"
-- Specificity: 30 (file+line+concrete)
-- Language: 25 (directive)
-- Category: 15 (CODE)
-- Authority: 10 (maintainer)
-- Status: 10 (blocking)
-= TOTAL: 90 → High confidence, auto-address
-```
-
-### 2.9. Detect Execution Mode
-
-**Auto-detect if running in non-interactive environment:**
-
-The command automatically detects whether to run in interactive or autonomous mode:
+Fetch all three types of PR comments using GitHub API with pagination:
 
 ```bash
-# Check if stdin is a terminal (TTY)
-if [ -t 0 ]; then
+# Get current authenticated user (for reply deduplication)
+CURRENT_USER=$(gh api user --jq '.login')
+
+# 1. Review comments (file/line-specific comments)
+gh api --paginate repos/{OWNER}/{REPO}/pulls/{PR_NUMBER}/comments > review_comments.json
+
+# 2. Review summaries (top-level review comments)
+gh api --paginate repos/{OWNER}/{REPO}/pulls/{PR_NUMBER}/reviews > review_summaries.json
+
+# 3. Issue comments (general PR discussion)
+gh api --paginate repos/{OWNER}/{REPO}/issues/{PR_NUMBER}/comments > issue_comments.json
+```
+
+### 1.4 Normalize Comment Structure
+
+Parse and normalize all three types into a unified structure. Each comment should have:
+
+```javascript
+{
+  id: number,                    // Comment ID for reply targeting
+  type: string,                  // "review" | "review-summary" | "issue"
+  path: string | null,           // File path (review comments only)
+  line: number | null,           // Line number (review comments only)
+  diff_hunk: string | null,      // Diff context (review comments only)
+  body: string,                  // Comment text
+  user: string,                  // Username of commenter
+  created_at: string,            // Timestamp
+  in_reply_to_id: number | null, // Parent comment ID (null if top-level)
+  review_state: string | null    // Review state for summaries (APPROVED, CHANGES_REQUESTED, etc.)
+}
+```
+
+**Type-specific normalization:**
+
+1. **Review comments** (`type: "review"`):
+   - Extract from `review_comments.json`
+   - Has `path`, `line`, `diff_hunk`
+   - May have `in_reply_to_id`
+
+2. **Review summaries** (`type: "review-summary"`):
+   - Extract from `review_summaries.json`
+   - No file/line context
+   - Has `state` field (APPROVED, CHANGES_REQUESTED, COMMENTED, etc.)
+   - `body` may be empty/null
+
+3. **Issue comments** (`type: "issue"`):
+   - Extract from `issue_comments.json`
+   - No file/line context
+   - General discussion
+
+### 1.5 Filter Comments
+
+Apply filtering rules to determine which comments require processing:
+
+**EXCLUDE:**
+- Comments where `in_reply_to_id != null` (already a reply in a thread)
+- Comments where `user` matches PR author's username
+- Comments from bots (user contains "bot" or "[bot]")
+- Comments with empty/whitespace-only `body`
+
+**INCLUDE:**
+- All other comments from review comments, review summaries, and issue comments
+- Questions, suggestions, praise, requests — everything gets processed
+
+**DO NOT filter out:**
+- Questions (they need answers)
+- Praise (they deserve acknowledgment)
+- Out-of-scope comments (they need deferral responses)
+
+### 1.6 Check for Existing Replies (Idempotency)
+
+For each comment that passed filtering, check if the current user has already replied:
+
+```bash
+# For review comments (type: "review")
+# Check if any reply in the comment thread is from CURRENT_USER
+gh api repos/{OWNER}/{REPO}/pulls/{PR_NUMBER}/comments/{COMMENT_ID} --jq '.user.login'
+# Also check the thread by looking at all comments and filtering by in_reply_to_id
+
+# For issue comments (type: "issue")
+# Check if any subsequent issue comment quotes/references this one from CURRENT_USER
+
+# For review summaries (type: "review-summary")
+# Check if any issue comment from CURRENT_USER references the review ID
+```
+
+**Mark as `already_replied: true`** if an existing reply from current user is found. These comments will be skipped from reply posting but shown in the summary.
+
+### 1.7 Confidence Scoring
+
+Score each comment 0-100 based on how confidently you can apply the right fix without human judgment. This score drives autonomous mode filtering and prioritization in interactive mode.
+
+**Judgment dimensions:**
+
+- **Specificity**: Does the comment point to exact code and suggest a concrete change? A comment saying "use const instead of let on line 42" is near-certain; "consider refactoring" is not. Comments with `path`, `line`, and code examples score highest.
+- **Clarity**: Is the intent unambiguous? Directive language ("please change", "must fix") is clearer than hedged language ("maybe consider", "could perhaps"). Questions without suggested changes score lowest.
+- **Risk**: Is the fix low-risk (naming, formatting, documentation) or could it change behavior (logic, API contracts, test assertions)? Low-risk changes can be applied with higher confidence.
+- **Authority**: Is the reviewer a maintainer with project context (`OWNER`, `COLLABORATOR`), or an outside contributor who may misunderstand the design? Maintainer feedback carries more weight.
+- **Urgency**: Is this from a `CHANGES_REQUESTED` review (blocking merge) or a casual `COMMENTED` review? Blocking reviews deserve higher priority.
+
+**Thresholds:**
+
+- **80+**: Safe to auto-fix in autonomous mode — clear, specific, low-risk
+- **60-79**: Present to user in interactive mode — reasonable but needs human judgment
+- **Below 60**: Reply without fixing — too ambiguous to act on confidently
+
+Use your judgment. These dimensions are guidelines for holistic assessment, not arithmetic. A comment from a maintainer saying "please rename this variable" might score 95; a vague comment from a contributor saying "this could be better" might score 30.
+
+Store the score with each comment for filtering and reporting.
+
+## Phase 2: Per-Comment Processing with Mandatory Replies
+
+### 2.1 Detect Execution Mode
+
+Auto-detect whether to run in interactive or autonomous mode:
+
+```bash
+# Check for explicit mode override in arguments
+if [[ "$ARGUMENTS" =~ (--autonomous|--auto|auto) ]]; then
+  MODE="autonomous"
+elif [[ "$ARGUMENTS" =~ (--interactive|interactive) ]]; then
   MODE="interactive"
+# Check for CI/CD environment
+elif [[ -n "$CI" || -n "$GITHUB_ACTIONS" || -n "$JENKINS_URL" || -n "$GITLAB_CI" || -n "$CIRCLECI" || -n "$TRAVIS" ]]; then
+  MODE="autonomous"
+# Check if stdin is a TTY
+elif [[ ! -t 0 ]]; then
+  MODE="autonomous"
 else
-  MODE="autonomous"
-fi
-
-# Check for CI/CD environment variables
-if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ] || [ -n "$JENKINS_URL" ] || [ -n "$GITLAB_CI" ]; then
-  MODE="autonomous"
+  MODE="interactive"
 fi
 ```
 
-**User can override detection with arguments:**
-- Arguments contain "auto", "--autonomous", or "--auto" → Force autonomous mode
-- Arguments contain "interactive" or "--interactive" → Force interactive mode
+### 2.2 Create Safety Checkpoint (Autonomous Mode Only)
 
-**Mode Behaviors:**
+**Before making any changes in autonomous mode**, create a rollback point:
 
-**Interactive Mode:**
-- Use AskUserQuestion tool to present all comments
-- User selects which items to address
-- Show all comments regardless of confidence score
-- Verbose explanations and confirmations
+```bash
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+STASH_NAME="pre-autonomous-pr-${PR_NUMBER}-${TIMESTAMP}"
 
-**Autonomous Mode:**
-- Filter comments by confidence threshold (≥80)
-- Auto-address high-confidence items without prompting
-- Skip low/medium confidence items
-- Generate detailed report of actions taken
-- Create rollback checkpoint before changes
+# Stash any uncommitted changes
+if [ -n "$(git status --porcelain)" ]; then
+  git stash push -u -m "$STASH_NAME"
+  echo "✓ Uncommitted changes stashed as: $STASH_NAME"
+fi
 
-### 3. Present Options (Interactive Mode) OR Auto-Filter (Autonomous Mode)
+# Record current commit for reference
+ROLLBACK_SHA=$(git rev-parse HEAD)
+echo "✓ Safety checkpoint created at commit: $ROLLBACK_SHA"
+```
+
+### 2.3 Present Comments (Interactive Mode)
 
 **IF MODE = "interactive":**
 
-Display actionable comments in organized format:
+Display all comments (regardless of confidence score) in organized format:
 
 ```
-Found {N} comments to address on PR #{NUMBER}: {TITLE}
+Found {N} comments on PR #{NUMBER}: {TITLE}
 
-Actionable Items:
+Comments to Review:
 ─────────────────────────────────────────────────────────
 
-1. [CODE] {file_path}:{line_number} (Score: 85)
-   Reviewer: @{username}
-   Comment: "{comment text}"
-   Suggested change: {describe what needs to be done}
+1. [CODE] {file_path}:{line} (Score: 85) — @{reviewer}
+   "{comment body excerpt}"
+   Suggested action: {what needs to be done}
 
-2. [STYLE] {file_path}:{line_number} (Score: 95)
-   Reviewer: @{username}
-   Comment: "{comment text}"
-   Suggested change: {describe what needs to be done}
+2. [STYLE] {file_path}:{line} (Score: 95) — @{reviewer}
+   "{comment body excerpt}"
+   Suggested action: {what needs to be done}
 
-3. [DOCS] {file_path}:{line_number} (Score: 50)
-   Reviewer: @{username}
-   Comment: "{comment text}"
-   Suggested change: {describe what needs to be done}
+3. [QUESTION] {file_path}:{line} (Score: 40) — @{reviewer}
+   "{comment body excerpt}"
+   Suggested action: Provide explanation
+
+4. [DOCS] No file specified (Score: 60) — @{reviewer}
+   "{comment body excerpt}"
+   Suggested action: Update documentation
 
 ─────────────────────────────────────────────────────────
 
 Which items would you like me to address?
-Options: "1,3,4" | "1-5" | "all" | "1"
+Options: "1,3,4" | "1-5" | "all" | "none"
 ```
 
-**Use AskUserQuestion tool** to present the selection options to the user.
+**Use AskUserQuestion tool** to get user selection.
+
+Parse user response and mark selected comments for processing.
+
+### 2.4 Filter Comments (Autonomous Mode)
 
 **IF MODE = "autonomous":**
 
-Filter and display only high-confidence comments (score ≥ 80):
+Filter comments by confidence threshold (≥80) and display processing plan:
 
 ```
 🤖 AUTONOMOUS MODE ACTIVE
@@ -199,405 +241,444 @@ Filter and display only high-confidence comments (score ≥ 80):
 Analyzing {N} total comments on PR #{NUMBER}: {TITLE}
 Confidence threshold: 80/100
 
-High-Confidence Items (will be addressed automatically):
+High-Confidence Items (will be addressed):
 ─────────────────────────────────────────────────────────
 
-1. [STYLE] src/utils.ts:42 (Score: 95)
-   Reviewer: @maintainer
+1. [STYLE] src/utils.ts:42 (Score: 95) — @maintainer
    Comment: "Please use const instead of let for maxRetries"
-   Action: Change variable declaration
+   Action: Change variable declaration → will fix + reply
 
-2. [DOCS] README.md:15 (Score: 88)
-   Reviewer: @maintainer
-   Comment: "Add installation instructions for Docker setup"
-   Action: Add documentation section
-
-3. [CODE] src/auth.ts:120 (Score: 90)
-   Reviewer: @owner
+2. [CODE] src/auth.ts:120 (Score: 90) — @owner
    Comment: "Add null check before accessing user.email"
-   Action: Add safety check
+   Action: Add safety check → will fix + reply
 
-Skipped Items (below confidence threshold):
+Below-Threshold Items (will reply without fix):
 ─────────────────────────────────────────────────────────
 
-4. [CODE] src/api.ts:55 (Score: 65)
-   Reviewer: @contributor
+3. [CODE] src/api.ts:55 (Score: 65) — @contributor
    Comment: "Consider refactoring this for better performance"
-   Reason: Vague suggestion - medium confidence, requires human review
+   Action: Reply requesting clarification
 
-5. [TEST] tests/auth.test.ts (Score: 45)
-   Reviewer: @contributor
-   Comment: "Why didn't you add tests for the error case?"
-   Reason: Question without clear action - low confidence
-
-6. [QUESTIONS] src/models.ts:78 (Score: 35)
-   Reviewer: @contributor
+4. [QUESTION] src/models.ts:78 (Score: 35) — @contributor
    Comment: "This approach might have issues"
-   Reason: Ambiguous feedback - low confidence
+   Action: Reply requesting specific concerns
 
 ─────────────────────────────────────────────────────────
 
-Processing 3 high-confidence items automatically...
+Processing {X} high-confidence items + replying to all {N} comments...
 ```
 
-Proceed to address only the high-confidence items (score ≥ 80).
+### 2.5 Process Each Comment
 
-### 3.5. Create Safety Checkpoint (Autonomous Mode Only)
+For each comment (whether selected in interactive mode or high-confidence in autonomous mode), follow this workflow:
 
-**Before making any changes in autonomous mode**, create a rollback point:
+#### Category: `actionable/clear` (Score ≥ 80, has file+line)
+
+**Goal:** Apply the reviewer's suggestion correctly, commit it atomically, and reply with the commit SHA.
+
+**Key principles:**
+
+- **Locate code by context, not line numbers.** The `diff_hunk` from the comment shows surrounding code context. Use this to find the right location because line numbers may have shifted from earlier fixes on the same file. If the context can't be found, treat as `missing-file`.
+- **One commit per fix** so each fix is traceable and independently revertable. Stage only the file you changed (`git add {path}` — never `git add .` or `git add -A`, because that risks staging unrelated changes).
+- **Verify before committing.** Check `git diff --quiet -- "{path}"` after applying the edit. If the file didn't actually change, the code already matches the suggestion — reply accordingly instead of creating an empty commit.
+- **If the file is missing or renamed**, don't guess — categorize as `missing-file` and reply asking the reviewer to confirm relevance.
+
+**Commit message format:** `fix: {description}` with body referencing reviewer and comment ID, because this creates an audit trail linking commits to specific review feedback:
+```
+fix: {brief description}
+
+Addresses comment from @{reviewer}
+Comment ID: {id}
+```
+
+Capture the commit SHA via `git rev-parse --short HEAD` and include it in the reply so the reviewer can click through to see exactly what changed.
+
+Use your judgment on fix complexity. If the suggestion requires changes across multiple files or has behavioral implications you're unsure about, categorize as `actionable/unclear` and ask for clarification instead of guessing.
+
+#### Category: `actionable/unclear` (Score 60-79, or unclear suggestion)
+
+Reply asking for clarification. Show the reviewer you understood their comment by offering specific interpretations of what they might mean, rather than a generic "please clarify." This narrows the discussion and helps them respond quickly.
+
+No commit — just reply.
+
+#### Category: `not-actionable/question`
+
+Read the relevant code (if the comment has a `path`, read that file for context) and answer the actual question. Explain *why* the code is written that way based on what you see. If you don't know, say so honestly and suggest who might.
+
+No commit — just reply.
+
+#### Category: `not-actionable/praise`
+
+Brief acknowledgment. Don't over-elaborate — match the reviewer's energy.
+
+No commit — just reply.
+
+#### Category: `not-actionable/out-of-scope`
+
+Acknowledge the value of the suggestion and explain why it's being deferred, not dismissed. If you can identify a follow-up context (future PR, separate issue), mention it.
+
+No commit — just reply.
+
+#### Category: `below-threshold` (Autonomous mode only, Score < 80)
+
+Be honest about why you didn't auto-fix. Explain the specific reason the confidence was low (e.g., "suggestion lacks concrete implementation details" or "change could affect behavior in ways I can't verify"). The reviewer should understand what to do next.
+
+No commit — just reply.
+
+#### Category: `missing-file`
+
+The file referenced in the comment doesn't exist. Reply noting it may have been moved or renamed, and ask the reviewer to confirm if the comment is still relevant.
+
+No commit — just reply.
+
+#### Interactive Mode: User Did Not Select
+
+For comments the user chose not to address, reply noting the comment has been deferred to manual review.
+
+No commit — just reply.
+
+### Reply Quality Criteria
+
+Every reply should be **contextual and useful** — not generic boilerplate. The reviewer should feel their specific feedback was understood, not that a bot processed it.
+
+**Judgment criteria:**
+- **Actionable fixes**: Reference the specific commit SHA. Briefly describe what changed so the reviewer doesn't have to click through.
+- **Clarification requests**: Offer specific interpretations rather than "please clarify." Show you read the comment.
+- **Questions**: Answer the actual question with code context. Don't dodge with "great question!"
+- **Praise/acknowledgment**: Brief and genuine. One sentence is fine.
+- **Deferrals**: Explain *why* it's deferred, not just *that* it's deferred.
+
+Adapt tone to the reviewer's tone. Match their formality level. A casual "LGTM" deserves a casual acknowledgment, not a formal response.
+
+### 2.6 Skip Already-Replied Comments
+
+If `already_replied: true` (detected in Phase 1.6), skip reply posting but include in summary report.
+
+## Phase 3: Reply Posting Logic
+
+### 3.1 Safe Reply Body Construction
+
+**CRITICAL: Prevent shell injection and malformed JSON.**
+
+Always construct reply bodies using `jq` with `--arg` flag and pipe to `gh api --input -`:
 
 ```bash
-# Create timestamp for unique identification
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-STASH_NAME="pre-autonomous-pr-${PR_NUMBER}-${TIMESTAMP}"
+# CORRECT METHOD (prevents injection):
+jq -n --arg body "$REPLY_TEXT" '{body: $body}' | \
+  gh api -X POST "repos/{OWNER}/{REPO}/pulls/{PR_NUMBER}/comments/{COMMENT_ID}/replies" --input -
 
-# Stash any uncommitted changes (including untracked files)
-if [ -n "$(git status --porcelain)" ]; then
-  git stash push -u -m "$STASH_NAME"
-  echo "✓ Uncommitted changes stashed"
+# NEVER USE THIS (unsafe):
+gh api -X POST "..." -f body="$REPLY_TEXT"
+```
+
+### 3.2 Reply to Review Comments (type: "review")
+
+For comments with `type: "review"`:
+
+```bash
+ENDPOINT="repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments/${COMMENT_ID}/replies"
+
+jq -n --arg body "$REPLY" '{body: $body}' | \
+  gh api -X POST "$ENDPOINT" --input -
+```
+
+### 3.3 Reply to Issue Comments (type: "issue")
+
+For comments with `type: "issue"`:
+
+1. **Format reply with quote** (truncate original to 200 chars):
+   ```bash
+   QUOTED_ORIGINAL=$(echo "$ORIGINAL_BODY" | head -c 200)
+   if [ ${#ORIGINAL_BODY} -gt 200 ]; then
+     QUOTED_ORIGINAL="${QUOTED_ORIGINAL}..."
+   fi
+
+   FORMATTED_REPLY=$(cat <<EOF
+   > ${QUOTED_ORIGINAL}
+
+   ${REPLY}
+   EOF
+   )
+   ```
+
+2. **Post as new issue comment**:
+   ```bash
+   ENDPOINT="repos/${OWNER}/${REPO}/issues/${PR_NUMBER}/comments"
+
+   jq -n --arg body "$FORMATTED_REPLY" '{body: $body}' | \
+     gh api -X POST "$ENDPOINT" --input -
+   ```
+
+### 3.4 Reply to Review Summaries (type: "review-summary")
+
+For comments with `type: "review-summary"`:
+
+1. **Format reply referencing the review**:
+   ```bash
+   # Handle empty/null body
+   if [ -z "$ORIGINAL_BODY" ] || [ "$ORIGINAL_BODY" = "null" ]; then
+     QUOTED_TEXT="No summary text provided — addressing based on review state (${REVIEW_STATE})."
+   else
+     QUOTED_ORIGINAL=$(echo "$ORIGINAL_BODY" | head -c 200)
+     if [ ${#ORIGINAL_BODY} -gt 200 ]; then
+       QUOTED_ORIGINAL="${QUOTED_ORIGINAL}..."
+     fi
+     QUOTED_TEXT="$QUOTED_ORIGINAL"
+   fi
+
+   FORMATTED_REPLY=$(cat <<EOF
+   > From @${REVIEWER}'s review (${REVIEW_STATE}):
+   > ${QUOTED_TEXT}
+
+   ${REPLY}
+   EOF
+   )
+   ```
+
+2. **Post as issue comment** (review summaries don't have reply threads):
+   ```bash
+   ENDPOINT="repos/${OWNER}/${REPO}/issues/${PR_NUMBER}/comments"
+
+   jq -n --arg body "$FORMATTED_REPLY" '{body: $body}' | \
+     gh api -X POST "$ENDPOINT" --input -
+   ```
+
+### 3.5 Error Handling for Reply Posting
+
+Handle API errors gracefully with retries:
+
+```bash
+# Retry logic with exponential backoff
+MAX_RETRIES=3
+RETRY_COUNT=0
+BACKOFF=1
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  HTTP_CODE=$(jq -n --arg body "$REPLY" '{body: $body}' | \
+    gh api -X POST "$ENDPOINT" --input - -i 2>&1 | grep "HTTP" | awk '{print $2}')
+
+  if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
+    echo "✓ Reply posted successfully"
+    break
+  elif [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "429" ]; then
+    # Rate limited or forbidden - check Retry-After header
+    RETRY_AFTER=$(gh api -i ... | grep -i "retry-after" | awk '{print $2}')
+    WAIT_TIME=${RETRY_AFTER:-$BACKOFF}
+    echo "⏳ Rate limited, waiting ${WAIT_TIME}s before retry..."
+    sleep $WAIT_TIME
+    BACKOFF=$((BACKOFF * 2))
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+  else
+    echo "❌ Failed to post reply (HTTP $HTTP_CODE), skipping..."
+    break
+  fi
+done
+
+if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+  echo "❌ Max retries reached, reply not posted"
 fi
-
-# Record the current commit SHA for reference
-ROLLBACK_SHA=$(git rev-parse HEAD)
-
-echo "✓ Safety checkpoint created"
-echo "  Stash name: $STASH_NAME"
-echo "  Base commit: $ROLLBACK_SHA"
-echo ""
 ```
 
-**Rollback mechanism:**
-- All changes are made on the current working tree
-- User can easily undo with: `git stash apply stash^{/$STASH_NAME}`
-- If satisfied, user can drop the stash: `git stash drop stash^{/$STASH_NAME}`
+## Phase 4: Summary Report
 
-Include rollback instructions in the final report.
+**Goal:** Give the user a clear picture of what happened — what was fixed, what was replied to, and what needs their attention.
 
-### 4. Address Changes
+### What to Include
 
-For each selected item:
+- **Statistics**: Fixes applied, replies posted, items skipped (already replied)
+- **Per-comment detail**: For each comment, show the action taken and reply status
+- **Next steps**: What the user should do now (review changes, run tests, push)
+- **Rollback instructions** (autonomous mode): How to undo commits, with a note that GitHub replies cannot be rolled back
 
-1. **Show context**: Display the relevant file section and explain the requested change
-2. **Read file**: Use Read tool to get current file content
-3. **Apply change**: Use Edit tool to make the requested modification
-4. **Report**: `✓ Addressed item {N}: {description}`
+### How to Structure
 
-Example workflow per item:
-```
-Addressing item 2: [STYLE] src/utils.ts:42
-Comment: "Please use const instead of let for immutable variables"
+Separate comments into clear groups so the user can scan quickly:
+1. **Comments Fixed + Replied** — code was changed, committed, and reply posted with SHA
+2. **Comments Replied Without Fix** — questions answered, praise acknowledged, clarifications requested, or items deferred
+3. **Already Replied (skipped)** — idempotency caught these; no action taken
 
-Reading src/utils.ts...
-Found line 42: let maxRetries = 3;
+For autonomous mode, include the rollback stash name and base commit SHA.
 
-Applying change: Converting let to const...
-✓ Changed line 42 from 'let' to 'const'
+### Formatting Guidance
 
-✓ Addressed item 2: Changed variable declaration to const
-```
+Adapt detail level to the volume of comments:
+- **Few comments (< 10)**: Show each comment inline with its action and reply
+- **Many comments (10+)**: Summarize by category with counts, list only the fixed items individually
 
-### 5. Summary
+Next steps should omit "post replies manually" (replies are already posted). Focus on: review the diff, run tests, push.
 
-After addressing all selected items:
-
-```bash
-# Show what changed
-git status --short
-git diff --stat
-```
-
-**Interactive Mode Report:**
-
-```
-📊 Summary
-  ✅ {N} comments addressed
-  📝 {M} files modified
-
-Changes:
-  • {file1}: {description}
-  • {file2}: {description}
-
-Remaining: {X} comments still need attention
-
-Next steps:
-  1. Review changes: git diff
-  2. Run tests: {test command if known}
-  3. Commit: git add . && git commit -m "fix: address PR review comments"
-  4. Push: git push
-```
-
-**Autonomous Mode Report:**
-
-```
-🤖 AUTONOMOUS EXECUTION COMPLETE
-
-📊 Statistics:
-  ✅ {N} high-confidence comments addressed (score ≥ 80)
-  ⏭️  {M} comments skipped (below confidence threshold)
-  📝 {X} files modified
-  ⏱️  Execution time: {duration}
-
-High-Confidence Items Addressed:
-──────────────────────────────────────────────────────────
-
-1. ✓ [STYLE] src/utils.ts:42 (Score: 95)
-   Comment: "Please use const instead of let for maxRetries"
-   Applied: Changed 'let maxRetries = 3' to 'const maxRetries = 3'
-
-2. ✓ [DOCS] README.md:15 (Score: 88)
-   Comment: "Add installation instructions for Docker setup"
-   Applied: Added Docker setup section with installation steps
-
-3. ✓ [CODE] src/auth.ts:120 (Score: 90)
-   Comment: "Add null check before accessing user.email"
-   Applied: Added 'if (user && user.email)' check
-
-Skipped Items Requiring Human Review:
-──────────────────────────────────────────────────────────
-
-4. ⏭️ [CODE] src/api.ts:55 (Score: 65 - Medium confidence)
-   Comment: "Consider refactoring this for better performance"
-   Reason: Vague suggestion without concrete implementation details
-   Action: Recommend manual review by developer
-
-5. ⏭️ [TEST] tests/auth.test.ts (Score: 45 - Low confidence)
-   Comment: "Why didn't you add tests for the error case?"
-   Reason: Question format, no clear action specified
-   Action: Requires clarification with reviewer
-
-6. ⏭️ [QUESTIONS] src/models.ts:78 (Score: 35 - Low confidence)
-   Comment: "This approach might have issues"
-   Reason: Ambiguous feedback without specifics
-   Action: Needs detailed discussion with team
-
-🔄 Rollback Information:
-──────────────────────────────────────────────────────────
-  Stash: pre-autonomous-pr-${PR_NUMBER}-${TIMESTAMP}
-  Base commit: ${ROLLBACK_SHA}
-
-  To undo all changes:
-    git reset --hard ${ROLLBACK_SHA}
-    git stash apply stash^{/pre-autonomous-pr-${PR_NUMBER}-${TIMESTAMP}}
-
-  To keep changes and clean up:
-    git stash drop stash^{/pre-autonomous-pr-${PR_NUMBER}-${TIMESTAMP}}
-
-📋 Next Steps:
-──────────────────────────────────────────────────────────
-  1. Review autonomous changes: git diff
-  2. Run tests to verify correctness: {test_command}
-  3. Review skipped items manually (shown above)
-  4. If satisfied, commit:
-     git add . && git commit -m "fix: address PR comments (autonomous: ${N} items)"
-  5. Push changes: git push
-  6. If issues found, rollback using instructions above
-```
-
-## Rules
-
-### Prioritization
-
-**High Priority** (address first):
-- File/line-specific comments with concrete suggestions
-- Comments using directive language ("Please change...", "Must fix...")
-- Maintainer/owner feedback
-- Unresolved discussions marked as blocking
-
-**Lower Priority**:
-- General discussion comments
-- Questions without suggested changes
-- Already resolved threads
-- Praise/approval comments
-
-### Skip These
-
-Don't process:
-- Info-only comments without action items
-- Questions that just need answers (not code changes)
-- Comments marked as resolved or outdated
-- Praise/acknowledgment comments
-- Comments from the PR author themselves
-
-### Safety
-
-- **No automatic git operations**: Never auto-commit or push
-- **Show before doing**: Display planned changes before applying
-- **Preserve context**: Don't remove important code/comments
-- **Ask when unclear**: Use AskUserQuestion if comment is ambiguous
-
-## Usage
-
-**Interactive Mode (default when run in terminal):**
-
-```bash
-/address-pr-comments 18                                    # PR number
-/address-pr-comments https://github.com/owner/repo/pull/123   # PR URL
-```
-
-**Autonomous Mode (auto-detected in CI/CD environments):**
-
-The command automatically switches to autonomous mode when:
-- Running in CI/CD environment (CI=true, GITHUB_ACTIONS=true, JENKINS_URL, GITLAB_CI, etc.)
-- stdin is not a TTY (piped or redirected input)
-
-```bash
-# Runs autonomously if detected in CI environment
-/address-pr-comments 18
-
-# In CI/CD workflow:
-- name: Address PR Comments
-  run: claude /address-pr-comments ${{ github.event.pull_request.number }}
-  # Automatically runs in autonomous mode
-```
-
-**Force Specific Mode:**
-
-```bash
-# Force autonomous mode (even in interactive terminal)
-/address-pr-comments 18 --autonomous
-/address-pr-comments 18 --auto
-/address-pr-comments 18 auto
-
-# Force interactive mode (even in CI/CD)
-/address-pr-comments 18 --interactive
-/address-pr-comments 18 interactive
-```
-
-**Environment Variables for Mode Detection:**
-
-The command checks these environment variables to detect CI/CD:
-- `CI=true` (generic CI indicator)
-- `GITHUB_ACTIONS=true` (GitHub Actions)
-- `JENKINS_URL` (Jenkins)
-- `GITLAB_CI` (GitLab CI)
-- `CIRCLECI=true` (CircleCI)
-- `TRAVIS=true` (Travis CI)
+Note clearly that commits can be reverted but replies posted to GitHub are permanent.
 
 ## Error Handling
 
-### PR doesn't exist
+### PR Not Found
 ```
-❌ Error: PR #{NUMBER} not found
+❌ Error: PR #{NUMBER} not found in {OWNER}/{REPO}
    Verify the PR number/URL and try again.
    Tip: Use `gh pr list` to see available PRs
 ```
 
-### No actionable comments
-```
-✅ No actionable comments found on PR #{NUMBER}
-   All comments are either:
-   - Already addressed
-   - Questions/discussions without code change requests
-   - From the PR author
-```
-
-### Not authenticated with GitHub
+### Not Authenticated
 ```
 ❌ Error: Not authenticated with GitHub CLI
    Run: gh auth login
 ```
 
-### Uncommitted changes
+### Working Tree Dirty
 ```
-⚠️  WARNING: You have uncommitted changes
-    Stash them first: git stash
-    Or commit them before addressing PR comments
-
-    Continue anyway? (not recommended)
+❌ Error: Working tree has uncommitted changes
+   Stash them first: git stash
+   Or commit them before addressing PR comments
 ```
 
-### File not found
+### Git User Not Configured
 ```
-⚠️  Comment references {file_path} which doesn't exist
+❌ Error: Git user not configured
+   Run:
+     git config user.name 'Your Name'
+     git config user.email 'your@email.com'
+```
+
+### No Comments Found
+```
+✅ No comments found on PR #{NUMBER}
+   All reviewers are satisfied or comments have been addressed.
+```
+
+### All Comments Already Replied
+```
+✅ All comments on PR #{NUMBER} have already been replied to
+   Nothing to process.
+```
+
+### File Not Found
+```
+⚠️  Warning: Comment references {file_path} which doesn't exist
     This comment may be outdated or refers to a renamed file.
-    Skipping...
+    Reply posted: "This file appears to have been moved or renamed..."
 ```
 
-### Ambiguous comment
+### API Rate Limit
 ```
-❓ Comment unclear: "{comment text}"
-   What change would you like me to make?
+⏳ Rate limited by GitHub API
+   Waiting {N} seconds before retry (attempt {X}/{MAX})...
+```
 
-   [Use AskUserQuestion to clarify with user]
+### Reply Posting Failed
+```
+❌ Failed to post reply to comment {COMMENT_ID} (HTTP {CODE})
+   Comment will be shown in summary but reply not posted.
+   You may need to reply manually.
 ```
 
 ## Implementation Notes
 
-### General
-- Use `gh api` for detailed comment data with file paths and line numbers
-- Parse JSON responses to extract actionable items
-- Use Read tool to get file context before changes
-- Use Edit tool for precise line modifications
-- Track which comments are addressed for final report
-- Consider comment timestamps to prioritize recent feedback
+### Comment Fetching
+- Use `gh api --paginate` for all comment endpoints to handle repos with many comments
+- Normalize all three comment types into unified structure for consistent processing
+- Track `in_reply_to_id` to avoid processing existing replies
 
-### Confidence Scoring Algorithm
+### Line Drift Safety
+- **Always use `diff_hunk` context** for locating code, not just API `line` number
+- API line numbers can become stale if files change after review
+- Extract surrounding code from `diff_hunk` and use as anchor text for matching
+- If context not found, treat as missing/renamed file
 
-**Step 1: Parse comment structure**
-```javascript
-{
-  path: "src/utils.ts",           // File path (if available)
-  line: 42,                        // Line number (if available)
-  body: "Please use const...",     // Comment text
-  user: { login: "reviewer" },    // Commenter info
-  author_association: "OWNER",     // Reviewer role
-  state: "unresolved"              // Discussion status
-}
-```
+### Reply Deduplication (Idempotency)
+- Before processing, check if current user already replied to each comment
+- For review comments: check reply threads via `in_reply_to_id`
+- For issue/review-summary comments: scan issue comment history
+- Mark as `already_replied: true` and skip posting (but show in summary)
 
-**Step 2: Calculate scores**
-- Specificity: Check for `path` AND `line` presence, analyze `body` for code examples
-- Language: Regex patterns for directive words ("please", "must", "should" vs "consider", "maybe")
-- Category: NLP-based classification or keyword matching
-- Authority: Map `author_association` (OWNER→10, COLLABORATOR→7, CONTRIBUTOR→3)
-- Status: Check review state and `state` field
+### Commit Strategy
+- **Per-fix commits** (not batched): Each actionable comment gets its own commit
+- Commit message format: `fix: {description}\n\nAddresses comment from @{reviewer}\nComment ID: {id}`
+- Stage **only the specific file** changed: `git add {path}` (never `git add .`)
+- Capture commit SHA for reply: `git rev-parse --short HEAD`
 
-**Step 3: Apply thresholds**
-```
-if (score >= 80) {
-  autonomous_mode: address_automatically
-} else if (score >= 60) {
-  interactive_mode: present_to_user
-} else {
-  skip_or_flag_for_manual_review
-}
-```
+### Reply Safety
+- **Always use `jq -n --arg body "$REPLY" '{body: $body}' | gh api --input -`**
+- This prevents shell injection and handles special characters correctly
+- Never use `-f body="..."` with complex/untrusted text
 
-### Mode Detection Implementation
+### Confidence Scoring
+- Used for autonomous mode filtering (≥80 = auto-address) and interactive mode prioritization
+- Holistic assessment across specificity, clarity, risk, authority, and urgency
+- Store with each comment for reporting; scoring is heuristic — use judgment for edge cases
 
+### Mode Detection
+- Explicit flags (`--autonomous`, `--interactive`) override auto-detection
+- CI/CD environments auto-select autonomous mode
+- Non-TTY stdin auto-selects autonomous mode
+- Default to interactive if no signals detected
+
+### Safety in Autonomous Mode
+- Create git stash before any changes for easy rollback
+- Only auto-fix high-confidence items (score ≥80)
+- **Never auto-commit in bulk or auto-push** — leave that to user
+- Provide clear rollback instructions in summary
+- Note that replies posted to GitHub cannot be rolled back
+
+## Usage Examples
+
+**Interactive mode (default in terminal):**
 ```bash
-# Pseudo-code for mode detection
-function detect_mode() {
-  # Check explicit override first
-  if args contains "--autonomous" or "--auto" or "auto":
-    return "autonomous"
-  if args contains "--interactive" or "interactive":
-    return "interactive"
-
-  # Check CI environment variables
-  if $CI or $GITHUB_ACTIONS or $JENKINS_URL or $GITLAB_CI or $CIRCLECI or $TRAVIS:
-    return "autonomous"
-
-  # Check if stdin is a terminal
-  if not is_tty(stdin):
-    return "autonomous"
-
-  # Default to interactive
-  return "interactive"
-}
+/address-pr-comments 123
+/address-pr-comments https://github.com/owner/repo/pull/456
 ```
 
-### Safety Mechanisms
+**Autonomous mode (auto-detected in CI or forced):**
+```bash
+/address-pr-comments 123 --autonomous
+/address-pr-comments 123 auto
 
-**Autonomous mode only:**
-1. Create git stash before any modifications
-2. Filter to high-confidence items only (score ≥ 80)
-3. Track all changes for detailed reporting
-4. Provide clear rollback instructions
-5. Never auto-commit or auto-push
+# In GitHub Actions workflow:
+- name: Address PR Comments
+  run: claude /address-pr-comments ${{ github.event.pull_request.number }}
+  # Automatically runs in autonomous mode due to CI environment
+```
 
-**Both modes:**
-1. Read file context before applying changes
-2. Show diffs for user review
-3. Skip ambiguous or unclear comments
-4. Preserve code context and intent
+**Force interactive mode:**
+```bash
+/address-pr-comments 123 --interactive
+```
+
+## Design Philosophy
+
+### Every Comment Gets a Reply
+
+This command ensures **no reviewer feedback is left unacknowledged**. Every comment receives a reply posted to GitHub, whether it's:
+- A fix with commit SHA
+- A request for clarification
+- An acknowledgment of praise
+- A deferral to manual review
+
+This creates clear communication and prevents reviewers from wondering if their feedback was seen.
+
+### Line-Drift Resilience
+
+By using `diff_hunk` context for code location instead of relying solely on API `line` numbers, this command handles cases where files have changed since the review was posted.
+
+### Safe Autonomous Operation
+
+Autonomous mode is designed for CI/CD environments where no human is present to approve changes. It:
+- Only auto-fixes high-confidence, low-risk items (score ≥80)
+- Creates rollback checkpoints before changes
+- Posts replies even for items it doesn't fix
+- Provides detailed audit trail in summary report
+
+### Per-Fix Commits
+
+Each code fix gets its own commit with a descriptive message referencing the reviewer and comment ID. This makes it easy to:
+- Review changes individually
+- Cherry-pick or revert specific fixes
+- Track which commit addressed which comment
+- Generate meaningful git history
+
+### Idempotency
+
+Running the command multiple times is safe:
+- Already-replied comments are detected and skipped
+- No duplicate replies are posted
+- Existing commits are not re-created
+- Summary report clearly shows what was skipped vs. processed
