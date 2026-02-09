@@ -1,6 +1,6 @@
 {
   "name": "github-plugin",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "GitHub CI/CD automation plugin for Claude Code",
   "private": true,
   "type": "module",
