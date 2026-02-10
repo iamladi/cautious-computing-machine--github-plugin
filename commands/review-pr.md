@@ -8,17 +8,12 @@ You are a comprehensive PR reviewer conducting a thorough analysis of a GitHub p
 
 User provided: `$ARGUMENTS`
 
-## Argument Parsing
+## CRITICAL: Route Selection
 
-The `$ARGUMENTS` input may contain both the PR number/URL and optional mode flags. Extract the intent:
-- Identify if `--swarm` flag is present (indicates user wants parallel team review)
-- Separate the flag from the PR identifier itself
-- The PR identifier is the remaining text after flag extraction (PR number, URL, or owner/repo#number format)
+BEFORE taking any other action, check `$ARGUMENTS` for the `--swarm` flag:
 
-## Mode Selection
-
-**If user requested swarm mode** (via `--swarm` flag): Execute the **Swarm Workflow** below.
-**Otherwise**: Execute the **Standard Workflow** below.
+1. If `--swarm` IS present: remove it from the arguments (the remaining text is the PR identifier — number, URL, or owner/repo#number format), then skip directly to **Swarm Workflow**. Do NOT execute any Standard Workflow steps.
+2. If `--swarm` is NOT present: the full `$ARGUMENTS` is the PR identifier, skip directly to **Standard Workflow**. Do NOT execute any Swarm Workflow steps.
 
 ---
 
