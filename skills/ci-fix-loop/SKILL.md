@@ -15,12 +15,12 @@ This skill is invoked when:
 - Multiple CI fix iterations are needed
 - User wants hands-off CI repair
 
-## Argument Parsing
+## CRITICAL: Parse Flags First
 
-The command arguments may contain optional flags that modify the fix loop behavior:
-- Extract `--swarm` flag if present (indicates user wants parallel team-based fixing)
-- Extract `--loop` or `--auto` flags (standard autonomous mode)
-- The flags can be combined with other arguments
+BEFORE proceeding to Phase 1, extract these flags from `$ARGUMENTS`:
+- `--swarm`: If present, set SWARM_MODE=true. You MUST remember this flag — it changes behavior at Step 2.5 (parallel team-based fixing).
+- `--loop` or `--auto`: Standard autonomous mode.
+- Remove all extracted flags from arguments; remaining text is additional context.
 
 ## Configuration
 
@@ -135,11 +135,11 @@ if current_errors is empty:
 
 #### Step 2.5: Apply Fixes
 
-**Condition Check**: Determine fix strategy based on error distribution and `--swarm` flag:
+**CRITICAL Condition Check**: Before applying fixes, check BOTH conditions — was `--swarm` set during flag parsing above, AND are errors in 2+ files?
 
 ```
 file_count = count of distinct files with errors
-use_swarm = (file_count >= 2) AND (--swarm flag is set)
+use_swarm = (file_count >= 2) AND (SWARM_MODE is true from "Parse Flags First" above)
 ```
 
 **If use_swarm is FALSE** (errors in single file OR --swarm not requested):
