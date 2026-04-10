@@ -48,8 +48,7 @@
   },
   "agents": [
     "./agents/ci-log-analyzer.md",
-    "./agents/ci-error-fixer.md",
-    "./agents/ci-monitor.md"
+    "./agents/ci-error-fixer.md"
   ],
   "skills": [
     "./skills/ci-fix-loop/SKILL.md"
