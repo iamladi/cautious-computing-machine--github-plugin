@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-04-10
+
+### Changed
+- Replace `ci-monitor` haiku agent with Monitor tool in ci-fix-loop (zero LLM token cost for CI polling)
+- Fix swarm-mode `PUSH_TIME` bug — timestamp now set before Step 2.7
+- CI completion monitor filters by specific run ID to avoid race conditions
+- Handle `action_required`, `skipped`, `requested`, `waiting` GitHub Actions statuses
+- Improved error handling: transient `gh` failures retry with stderr warnings instead of silent `2>/dev/null`
+
+### Removed
+- `ci-monitor` agent — functionality inlined into ci-fix-loop via Monitor tool
+
 ## [1.5.1] - 2026-02-10
 
 ### Fixed

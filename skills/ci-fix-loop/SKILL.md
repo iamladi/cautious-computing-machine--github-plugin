@@ -231,6 +231,12 @@ Attempt ${attempt} of ${max_attempts} (ci-fix-loop with swarm)"
 
 This replaces the per-error serial commits from the non-swarm approach.
 
+Push to trigger CI (swarm mode):
+```bash
+PUSH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+git push origin ${BRANCH}
+```
+
 **Resource Cleanup**:
 
 Always execute cleanup regardless of success or failure:
@@ -277,43 +283,85 @@ git push origin ${BRANCH}
 
 #### Step 2.7: Wait for CI Run to Start
 
-Poll until new run appears (max 2 minutes):
-```bash
-TIMEOUT=120
-START=$(date +%s)
+Use the Monitor tool to detect when a new CI run appears after the push:
 
-while true; do
-  RUN_JSON=$(gh run list --branch "$BRANCH" --limit 1 --json databaseId,status,createdAt)
-  CREATED=$(echo "$RUN_JSON" | jq -r '.[0].createdAt')
-
-  # Check if this run was created after our push
-  if [[ "$CREATED" > "$PUSH_TIME" ]]; then
-    NEW_RUN_ID=$(echo "$RUN_JSON" | jq -r '.[0].databaseId')
-    echo "CI run started: $NEW_RUN_ID"
-    break
-  fi
-
-  ELAPSED=$(($(date +%s) - START))
-  if [ $ELAPSED -gt $TIMEOUT ]; then
-    echo "Warning: No CI run started after ${TIMEOUT}s"
-    echo "Check if workflows are enabled for this branch"
-    break
-  fi
-
-  sleep 5
-done
+```
+Monitor:
+  description: "CI run start detection on ${BRANCH}"
+  timeout_ms: 120000
+  persistent: false
+  command: |
+    while true; do
+      RUN_JSON=$(gh run list --branch "$BRANCH" --limit 1 --json databaseId,status,createdAt 2>&1) || {
+        echo "WARN: gh run list failed, retrying..." >&2
+        sleep 5; continue
+      }
+      CREATED=$(echo "$RUN_JSON" | jq -r '.[0].createdAt // empty')
+      if [ -n "$CREATED" ] && [[ "$CREATED" > "$PUSH_TIME" ]]; then
+        RUN_ID=$(echo "$RUN_JSON" | jq -r '.[0].databaseId')
+        echo "STARTED|$RUN_ID"
+        exit 0
+      fi
+      sleep 5
+    done
 ```
 
-#### Step 2.8: Monitor CI (Background)
+**Notification handling:**
+- `STARTED|{RUN_ID}` → capture `NEW_RUN_ID`, proceed to Step 2.8
+- Monitor timeout (no notification within 120s) → warn "No CI run started after 120s — check if workflows are enabled for this branch", proceed to Step 2.9 with `TIMEOUT`
 
-Spawn the `ci-monitor` agent with `run_in_background: true`:
+#### Step 2.8: Monitor CI Completion
 
-The monitor will:
-- Poll `gh run list` every 60 seconds
-- Return when CI reaches terminal state
-- Output: `SUCCESS|RUN_ID`, `FAILURE|RUN_ID`, `CANCELLED|RUN_ID`, or `TIMEOUT|RUN_ID`
+Use the Monitor tool to track the CI run until terminal state. When `NEW_RUN_ID` is known from Step 2.7, filter by that specific run to avoid race conditions with concurrent runs:
 
-Wait for monitor result using `TaskOutput` tool.
+```
+Monitor:
+  description: "CI run ${NEW_RUN_ID} on ${BRANCH}"
+  timeout_ms: 1800000
+  persistent: false
+  command: |
+    while true; do
+      if [ -n "$NEW_RUN_ID" ]; then
+        RESULT=$(gh run view "$NEW_RUN_ID" --json databaseId,status,conclusion 2>&1) || {
+          echo "WARN: gh run view failed, retrying..." >&2
+          sleep 60; continue
+        }
+        STATUS=$(echo "$RESULT" | jq -r '.status // "unknown"')
+        CONCLUSION=$(echo "$RESULT" | jq -r '.conclusion // "null"')
+        RUN_ID="$NEW_RUN_ID"
+      else
+        RESULT=$(gh run list --branch "$BRANCH" --limit 1 --json databaseId,status,conclusion 2>&1) || {
+          echo "WARN: gh run list failed, retrying..." >&2
+          sleep 60; continue
+        }
+        STATUS=$(echo "$RESULT" | jq -r '.[0].status // "unknown"')
+        CONCLUSION=$(echo "$RESULT" | jq -r '.[0].conclusion // "null"')
+        RUN_ID=$(echo "$RESULT" | jq -r '.[0].databaseId // "unknown"')
+      fi
+      case "$STATUS" in
+        completed)
+          case "$CONCLUSION" in
+            success)    echo "SUCCESS|$RUN_ID"; exit 0 ;;
+            failure)    echo "FAILURE|$RUN_ID"; exit 1 ;;
+            cancelled)  echo "CANCELLED|$RUN_ID"; exit 2 ;;
+            skipped)    echo "SUCCESS|$RUN_ID"; exit 0 ;;
+            *)          echo "FAILURE|$RUN_ID"; exit 1 ;;
+          esac ;;
+        requested|waiting|queued|pending|in_progress)
+          ;; # still running, continue polling
+        action_required)
+          echo "ACTION_REQUIRED|$RUN_ID"; exit 3 ;;
+      esac
+      sleep 60
+    done
+```
+
+**Notification handling:**
+- `SUCCESS|{RUN_ID}` → proceed to Step 2.9 with success
+- `FAILURE|{RUN_ID}` → proceed to Step 2.9 with failure (triggers next fix iteration)
+- `CANCELLED|{RUN_ID}` → warn "CI run was cancelled externally" and exit loop
+- `ACTION_REQUIRED|{RUN_ID}` → warn user that manual approval is needed, exit loop
+- Monitor timeout (30 min) → treat as `TIMEOUT|unknown`, report and suggest `gh run watch`
 
 #### Step 2.9: Handle Result
 
@@ -438,13 +486,12 @@ echo "Pull and retry: git pull --rebase && /fix-ci --loop"
 Estimated per iteration:
 - Analysis (sonnet): ~2000 tokens
 - Fix application (sonnet): ~3000 tokens
-- CI monitoring (haiku): ~500 tokens
 - State/reporting: ~500 tokens
-- **Total: ~6000 tokens/iteration**
-- **10 iterations max: ~60,000 tokens**
+- **Total: ~5500 tokens/iteration**
+- **10 iterations max: ~55,000 tokens**
 
 Key optimizations:
-- Haiku model for CI polling (10x cheaper than sonnet)
+- CI monitoring uses the Monitor tool (zero LLM tokens)
 - No context accumulation between iterations
 - Minimal state tracking
 - Background execution frees terminal
