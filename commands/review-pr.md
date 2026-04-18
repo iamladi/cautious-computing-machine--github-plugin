@@ -2,531 +2,282 @@
 description: Comprehensive Pull Request Review
 ---
 
-# Pull Request Review Command
+# Pull Request Review
 
-You are a comprehensive PR reviewer conducting a thorough analysis of a GitHub pull request. Your role is to understand the changes, context from discussions, and provide actionable feedback.
+## Role
 
-User provided: `$ARGUMENTS`
+Conduct a thorough review of a GitHub pull request: understand the intent, assess the diff against that intent, and surface issues the PR author and maintainer should know about. Output is an organized report, not a merge decision — leave the approve/request-changes call to humans.
 
-## CRITICAL: Route Selection
+## Priorities
 
-BEFORE taking any other action, check `$ARGUMENTS` for the `--swarm` flag:
+Finding coverage (everything worth surfacing gets surfaced) > Evidence (every finding cites `file:line`) > Actionability (fixes suggested, not just problems named) > Brevity
 
-1. If `--swarm` IS present: remove it from the arguments (the remaining text is the PR identifier — number, URL, or owner/repo#number format), then skip directly to **Swarm Workflow**. Do NOT execute any Standard Workflow steps.
-2. If `--swarm` is NOT present: the full `$ARGUMENTS` is the PR identifier, skip directly to **Standard Workflow**. Do NOT execute any Swarm Workflow steps.
+## Scope
+
+`$ARGUMENTS` is a PR identifier: a number (`123`), a URL (`https://github.com/owner/repo/pull/456`), or `owner/repo#number`.
+
+## Routing
+
+Standard flow is the default — one reviewer covers every concern sequentially. Pass `--swarm` for a team of four specialized reviewers (security, performance, tests, architecture) working in parallel; that's the right choice for large diffs (>30 files) or PRs where one dimension dominates (security-critical changes, perf-sensitive code paths). Strip `--swarm` from the args; the remainder is the PR identifier.
+
+If swarm mode is requested but `TeamCreate` isn't available:
+```
+Swarm mode requires agent teams. Set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in settings.json or environment.
+Falling back to standard workflow.
+```
+Then continue with the PR identifier already parsed.
+
+## PR context (both modes)
+
+Fetch everything the review will touch before doing any analysis — partial context produces partial findings:
+
+```bash
+# metadata
+gh pr view {PR_NUMBER} --json title,body,state,author,headRefName,baseRefName,url,commits,reviews,comments,labels,milestone
+
+# diff and discussion
+gh pr diff {PR_NUMBER}
+gh pr view {PR_NUMBER} --comments
+gh pr checks {PR_NUMBER}
+
+# local checkout for file reads
+gh pr checkout {PR_NUMBER}
+BASE_BRANCH=$(gh pr view {PR_NUMBER} --json baseRefName -q .baseRefName)
+```
+
+Before reviewing, read the project conventions — they shape what "reasonable" looks like in this codebase:
+- `CONTRIBUTING.md` — review guidelines.
+- `CLAUDE.md` — project-specific instructions.
+- `.github/PULL_REQUEST_TEMPLATE.md` — required PR content.
+- CI config — what's auto-checked vs what the review needs to catch.
 
 ---
 
-## Swarm Workflow
+## Standard workflow
 
-An alternative approach using agent teams for PR review that benefits from parallel specialized analysis. This works well for comprehensive reviews where different aspects (security, performance, testing, architecture) can be evaluated independently.
+### Analyze
 
-### Team Prerequisites and Fallback
+Compare against the base branch and walk every change:
 
-Attempt to create the agent team using `TeamCreate` with a unique timestamped name: `review-pr-{number}-{YYYYMMDD-HHMMSS}` and description: "PR Review: {title}".
-
-If team creation fails (tool unavailable or experimental features disabled), inform the user that swarm mode requires agent teams to be enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in settings.json), then fall back to executing the Standard Workflow instead. The PR identifier is already parsed and ready to use.
-
-### Phase 1: PR Information Gathering
-
-Execute the same PR information gathering steps as Standard Workflow Phase 1 (extract PR identifier, fetch metadata, checkout branch). This establishes the shared context that all teammates will need.
-
-After gathering PR information and checking out the branch, proceed to spawn teammates for parallel review.
-
-### Shared Task List
-
-Create tasks via `TaskCreate` that represent the specialized review areas:
-1. **Security Review** — Identify security vulnerabilities and risks
-2. **Performance Review** — Evaluate performance implications
-3. **Test Coverage Review** — Assess test adequacy and quality
-4. **Architecture Review** — Examine design patterns and code organization
-
-These tasks provide structure for parallel specialized reviews.
-
-### Teammate Roles and Spawn Protocol
-
-After completing Phase 1, spawn 4 specialized reviewer teammates via the `Task` tool with `team_name` parameter and `subagent_type: "general-purpose"`. Each teammate prompt MUST include as string literals (NOT references to conversation):
-
-**Required Context in Each Spawn Prompt**:
-- PR title
-- PR author
-- Base branch name
-- Head branch name
-- Diff summary from `git diff $BASE_BRANCH...HEAD --stat`
-- List of changed files
-- For PRs with ≤50 changed files: Include the changed file contents (read them before spawning)
-- For PRs with >50 changed files: Include file list only, instruct teammates to Read specific files they need to examine
-- PR description/body
-
-**Teammate 1: Security Reviewer**
-
+```bash
+git diff $BASE_BRANCH...HEAD --stat
+git diff $BASE_BRANCH...HEAD
+git log $BASE_BRANCH..HEAD --no-merges
 ```
-You are conducting a security-focused review as part of a PR review team.
 
-PR TITLE: {literal PR title}
-PR AUTHOR: {literal author}
-BASE BRANCH: {literal base branch}
-HEAD BRANCH: {literal head branch}
+For every changed file, understand the change on its own terms. New files — what's their purpose? Deleted files — why were they removed? Modified files — what semantic change was made? Test files — does the new code have test coverage commensurate with its risk? Documentation — did the docs that describe this code get updated too?
+
+Also fold in the discussion: unresolved review threads, CI status, linked issues. Context from a conversation often explains why a choice was made that looks wrong at the file level.
+
+### Find stage
+
+Collect every issue worth surfacing, no self-censoring. 4.7 will suppress "minor" findings if the prompt says "only surface important issues" — don't let it. For each finding, record:
+
+- **Severity**: `blocker` | `major` | `minor` | `nit`
+- **Confidence**: `high` | `medium` | `low`
+- **Location**: `file:line` (or `file` for global concerns)
+- **Category**: `correctness` / `security` / `performance` / `tests` / `docs` / `style` / `architecture`
+- **One-line reasoning** — what makes this a finding, not a preference
+
+Cover every axis. If you're only finding issues in one dimension, you're not looking hard enough at the others.
+
+Severity calibration (apply to every finding, not just the obvious ones):
+- **Blocker** — merge would introduce a correctness bug, security hole, or break a deployed contract.
+- **Major** — likely to cause noticeable problems in production or maintenance, but merge isn't unsafe.
+- **Minor** — smells, inconsistencies, or small cleanup opportunities; fine to defer.
+- **Nit** — style, wording, or personal preference with negligible impact.
+
+Confidence calibration:
+- **High** — you traced the issue through the code and can cite the exact mechanism.
+- **Medium** — the issue is probable based on pattern, but you didn't verify end-to-end.
+- **Low** — suspicious but you'd want someone to double-check.
+
+### Filter stage
+
+From the find-stage list, surface to the report:
+- Every `blocker` (any confidence).
+- Every `major` with confidence ≥ medium.
+- `minor` findings grouped as a single section, one line each.
+- `nit` findings as an optional trailing group, one line each.
+
+Drop low-confidence `major` or below unless two or more independently suggest the same area — in which case surface it and flag the uncertainty.
+
+### Report
+
+Structure the output for the PR author to act on, not just read. Use `file:line` everywhere a location exists.
+
+```markdown
+# PR Review: #{number} — {title}
+
+## Summary
+- **Purpose**: {one-line description of what the PR does}
+- **Scope**: {feature / bugfix / refactor / docs / chore / ...}
+- **Risk**: {low / medium / high — and why}
+- **Overall**: {thumbnail verdict — "looks solid", "ready pending fixes", "needs discussion", etc. — this is input to human reviewers, not a merge decision}
+
+## Findings
+
+### Blockers
+- **[correctness, high conf]** `src/auth.ts:42` — {description + execution path}. Fix: {suggested change}.
+
+### Major
+- **[security, medium conf]** `src/api/handler.ts:118–140` — {description}. Fix: {suggested change}.
+
+### Minor
+- `src/util.ts:8` — variable name suggests the wrong invariant.
+- `tests/form.spec.ts:55` — assertion relies on internal shape; could be brittle.
+
+### Nits
+- `README.md:L24` — typo "recieve".
+
+## Discussion & CI
+
+- Unresolved threads: {summary or "none"}
+- CI: {passing / N failing / pending}
+- Linked issues: {list}
+
+## Positive notes
+
+- {genuine praise for well-done parts — not boilerplate}
+
+## Suggested follow-up session
+
+Offer: deep-dive into a specific file, run tests, search for similar patterns elsewhere, or draft a GitHub review comment from the findings above.
+```
+
+---
+
+## Swarm workflow
+
+Parallelize by dimension when the PR is big or multi-faceted. Four specialized reviewers run concurrently, each covering one concern; findings get consolidated with the same find/filter discipline.
+
+### Team setup
+
+Create the team with `TeamCreate`: name `review-pr-{number}-{YYYYMMDD-HHMMSS}`, description `PR Review: {title}`. Register four shared tasks via `TaskCreate`: Security, Performance, Test Coverage, Architecture.
+
+### Context for teammates
+
+Teammates can't see this conversation. Every spawn prompt embeds literally:
+
+- PR title, author, base and head branches.
+- Diff summary: `git diff $BASE_BRANCH...HEAD --stat`.
+- Changed file list.
+- PR description/body.
+- For PRs ≤50 files: include the full changed file contents in the prompt. For PRs >50 files: include the file list only and tell the teammate to `Read` what they need.
+
+### Teammate dispatch
+
+Spawn all four via `Task` with `team_name` and `subagent_type: "general-purpose"`. The prompts share most of their structure; the specialization is in the role, judgment criteria, and cross-concern triggers:
+
+<example name="Specialized reviewer prompt template">
+You are conducting a {Security | Performance | Test Coverage | Architecture} review as part of a PR review team.
+
+PR TITLE: {literal}
+PR AUTHOR: {literal}
+BASE BRANCH: {literal}
+HEAD BRANCH: {literal}
 
 DIFF SUMMARY:
-{literal git diff --stat output}
+{literal stat output}
 
 CHANGED FILES:
-{literal list of changed files}
+{literal list}
 
-[If ≤50 files]
+{If ≤50 files:}
 CHANGED FILE CONTENTS:
-{literal file contents}
+{literal contents}
 
-[If >50 files]
-Note: This PR has >50 changed files. Use the Read tool to examine specific files you need to review for security concerns.
+{If >50 files:}
+Note: >50 changed files. Use `Read` to examine files relevant to your concern.
 
 PR DESCRIPTION:
-{literal PR body}
+{literal body}
 
-YOUR TASK:
-Review this PR for security vulnerabilities and risks. Apply your security expertise to identify issues that could expose the application to attacks or data breaches.
+YOUR ROLE — {role-specific sentence}:
+- Security: find vulnerabilities and risks an attacker could exploit or that expose data.
+- Performance: find changes that will degrade response times, increase resource use, or create scale bottlenecks.
+- Test Coverage: assess whether the suite adequately covers the changes and would catch regressions.
+- Architecture: evaluate design patterns, separation of concerns, and fit with codebase conventions.
 
-Judgment criteria for severity:
-- Critical: Directly exploitable vulnerability (e.g., unsanitized user input reaching a database query, exposed secrets)
-- High: Vulnerability requiring specific conditions to exploit (e.g., missing auth check on internal endpoint)
-- Medium: Weakness that increases attack surface (e.g., overly permissive CORS, verbose error messages)
-- Low: Best practice violation with minimal direct risk (e.g., missing security headers)
+SEVERITY — calibrate to your dimension:
+- Critical: {role-specific example — e.g., "unsanitized user input reaching a SQL query" / "N+1 in hot path" / "new API endpoint with no tests" / "breaking change to public API"}.
+- High: {role-specific example — e.g., "missing auth on internal endpoint" / "missing index on growing table" / "error paths untested" / "significant deviation from codebase conventions"}.
+- Medium: {role-specific example — e.g., "verbose error messages leaking internals" / "unnecessary allocations in loops" / "shallow tests that only cover happy path" / "logic in wrong layer"}.
+- Low: {role-specific example — best practice violations with minimal real impact}.
 
-Common areas to examine: authentication flows, input handling, dependency changes, secrets in code, and authorization boundaries. Use your expertise to identify issues beyond this list.
-
-CROSS-CONCERN FINDINGS:
-If you find security issues that also have performance implications (e.g., DoS potential), share via SendMessage:
-"Security: This {issue} at {file}:{line} also has {other concern} implications — {explanation}"
-
-WORKING CONSTRAINTS:
-You're operating in a parallel review team. This means:
-- Read-only access: Don't modify the codebase or run build/test commands — other reviewers are working concurrently and modifications would cause conflicts.
-- Team communication only: Use SendMessage for cross-concern findings. You cannot interact with the user directly.
-
-COMPLETION:
-When you've completed your security review, mark your task complete via TaskUpdate with your findings, send "REVIEW COMPLETE" via SendMessage, and wait for shutdown_request.
-
-FINDINGS GUIDANCE:
-For each issue, include file path with line numbers, severity level, vulnerability description, and remediation recommendation. Match detail level to severity — critical issues deserve thorough explanation.
-```
-
-**Teammate 2: Performance Reviewer**
-
-```
-You are conducting a performance-focused review as part of a PR review team.
-
-PR TITLE: {literal PR title}
-PR AUTHOR: {literal author}
-BASE BRANCH: {literal base branch}
-HEAD BRANCH: {literal head branch}
-
-DIFF SUMMARY:
-{literal git diff --stat output}
-
-CHANGED FILES:
-{literal list of changed files}
-
-[If ≤50 files]
-CHANGED FILE CONTENTS:
-{literal file contents}
-
-[If >50 files]
-Note: This PR has >50 changed files. Use the Read tool to examine specific files you need to review for performance concerns.
-
-PR DESCRIPTION:
-{literal PR body}
-
-YOUR TASK:
-Review this PR for performance implications. Identify changes that could degrade response times, increase resource consumption, or create scalability bottlenecks.
-
-Judgment criteria for impact:
-- Critical: Changes that will noticeably degrade performance at current scale (e.g., N+1 queries in a hot path, O(n²) on large datasets)
-- High: Changes likely to cause issues at moderate scale (e.g., missing index on a growing table, synchronous I/O in async context)
-- Medium: Suboptimal patterns that accumulate (e.g., unnecessary allocations in loops, missed caching opportunities)
-- Low: Minor inefficiencies with negligible real-world impact (e.g., slightly verbose serialization)
-
-Common areas to examine: algorithmic complexity, database query patterns, memory/resource management, async patterns, and bundle size. Use your expertise to identify issues beyond this list.
+Apply find/filter discipline: note *every* issue you see at every severity, then surface all high+critical and a representative sample of medium/low. 4.7 otherwise suppresses low-severity findings the team lead actually wants.
 
 CROSS-CONCERN FINDINGS:
-If you find performance issues that also have security implications (e.g., DoS potential), share via SendMessage:
-"Performance: This {issue} at {file}:{line} also has {other concern} implications — {explanation}"
+When a finding spans concerns (e.g., a security issue also has perf implications), share via `SendMessage`:
+"{Your role}: {issue} at {file}:{line} also has {other concern} implications — {explanation}"
 
-WORKING CONSTRAINTS:
-You're operating in a parallel review team. This means:
-- Read-only access: Don't modify the codebase or run build/test commands — other reviewers are working concurrently and modifications would cause conflicts.
-- Team communication only: Use SendMessage for cross-concern findings. You cannot interact with the user directly.
-
-COMPLETION:
-When you've completed your performance review, mark your task complete via TaskUpdate with your findings, send "REVIEW COMPLETE" via SendMessage, and wait for shutdown_request.
-
-FINDINGS GUIDANCE:
-For each issue, include file path with line numbers, impact level, concern description, and optimization recommendation. Match detail level to impact — critical issues deserve thorough explanation.
-```
-
-**Teammate 3: Test Coverage Reviewer**
-
-```
-You are conducting a test coverage review as part of a PR review team.
-
-PR TITLE: {literal PR title}
-PR AUTHOR: {literal author}
-BASE BRANCH: {literal base branch}
-HEAD BRANCH: {literal head branch}
-
-DIFF SUMMARY:
-{literal git diff --stat output}
-
-CHANGED FILES:
-{literal list of changed files}
-
-[If ≤50 files]
-CHANGED FILE CONTENTS:
-{literal file contents}
-
-[If >50 files]
-Note: This PR has >50 changed files. Use the Read tool to examine specific files you need to review for test coverage.
-
-PR DESCRIPTION:
-{literal PR body}
-
-YOUR TASK:
-Review this PR for test adequacy and quality. Assess whether the test suite adequately covers the changes and would catch regressions.
-
-Judgment criteria for gap severity:
-- Critical: Core functionality completely untested (e.g., new API endpoint with no tests, auth logic without coverage)
-- High: Important edge cases missing (e.g., error handling paths, boundary conditions on critical logic)
-- Medium: Test exists but is shallow or brittle (e.g., only tests happy path, uses implementation details)
-- Low: Nice-to-have coverage improvements (e.g., additional assertion specificity, minor edge cases)
-
-Key questions to answer: Are tests meaningful (not just "it doesn't crash")? Do they cover error states and edge cases? Would they catch regressions if someone modifies this code later? Are tests maintainable and isolated?
-
-CROSS-CONCERN FINDINGS:
-If you find test gaps that expose security or performance risks, share via SendMessage:
-"Test Coverage: Missing tests at {file}:{line} also creates {other concern} risk — {explanation}"
-
-WORKING CONSTRAINTS:
-You're operating in a parallel review team. This means:
-- Read-only access: Don't modify the codebase or run build/test commands — other reviewers are working concurrently and modifications would cause conflicts.
-- Team communication only: Use SendMessage for cross-concern findings. You cannot interact with the user directly.
+CONSTRAINTS (parallel-team context):
+- Read-only. Don't modify the codebase or run build/test commands — other reviewers are working concurrently.
+- Communicate via `SendMessage` only; `AskUserQuestion` isn't available in team context.
 
 COMPLETION:
-When you've completed your test coverage review, mark your task complete via TaskUpdate with your findings, send "REVIEW COMPLETE" via SendMessage, and wait for shutdown_request.
+1. `TaskUpdate` your shared task with findings.
+2. `SendMessage` `REVIEW COMPLETE`.
+3. Wait for `shutdown_request`.
 
-FINDINGS GUIDANCE:
-For each gap, include file path with line numbers, severity, what test scenario is missing, and recommendation. Match detail level to severity — critical gaps deserve thorough explanation.
-```
+For each finding: `file:line`, severity, description, recommendation. Match depth to severity — critical findings deserve a traced execution path; nits deserve one line.
+</example>
 
-**Teammate 4: Architecture Reviewer**
+### Convergence
 
-```
-You are conducting an architecture-focused review as part of a PR review team.
-
-PR TITLE: {literal PR title}
-PR AUTHOR: {literal author}
-BASE BRANCH: {literal base branch}
-HEAD BRANCH: {literal head branch}
-
-DIFF SUMMARY:
-{literal git diff --stat output}
-
-CHANGED FILES:
-{literal list of changed files}
-
-[If ≤50 files]
-CHANGED FILE CONTENTS:
-{literal file contents}
-
-[If >50 files]
-Note: This PR has >50 changed files. Use the Read tool to examine specific files you need to review for architecture concerns.
-
-PR DESCRIPTION:
-{literal PR body}
-
-YOUR TASK:
-Review this PR for architectural quality and design patterns. Evaluate whether the changes follow established codebase conventions and maintain a sustainable design.
-
-Judgment criteria for impact:
-- Critical: Breaking changes to public APIs, circular dependencies introduced, or fundamental design violations that would be costly to fix later
-- High: Patterns that deviate significantly from codebase conventions, tight coupling that limits extensibility, or poor separation of concerns
-- Medium: Suboptimal design choices that work but create maintenance burden (e.g., logic in wrong layer, inconsistent abstractions)
-- Low: Style-level architectural preferences with minimal real impact
-
-Key questions to answer: Does this follow the existing codebase's patterns? Are responsibilities clearly separated? Would a new developer understand the design intent? Are there breaking changes that affect consumers?
-
-CROSS-CONCERN FINDINGS:
-If you find architectural issues that affect security, performance, or testability, share via SendMessage:
-"Architecture: This {issue} at {file}:{line} also has {other concern} implications — {explanation}"
-
-WORKING CONSTRAINTS:
-You're operating in a parallel review team. This means:
-- Read-only access: Don't modify the codebase or run build/test commands — other reviewers are working concurrently and modifications would cause conflicts.
-- Team communication only: Use SendMessage for cross-concern findings. You cannot interact with the user directly.
-
-COMPLETION:
-When you've completed your architecture review, mark your task complete via TaskUpdate with your findings, send "REVIEW COMPLETE" via SendMessage, and wait for shutdown_request.
-
-FINDINGS GUIDANCE:
-For each issue, include file path with line numbers, impact level, architectural concern, and improvement recommendation. Match detail level to impact — critical issues deserve thorough explanation.
-```
-
-### Completion Protocol
-
-Wait for all 4 teammates to signal completion by sending "REVIEW COMPLETE" messages. Timeout: 10 minutes from teammate spawn time.
-
-**If timeout occurs**: Proceed with available findings and note which teammates timed out in the consolidated review.
-
-**Fallback behavior**: If a teammate fails or gets stuck (repeated similar messages, no progress), you have three options:
-1. Note the failure and proceed with other teammates' findings
-2. Spawn a replacement teammate with clearer scoped instructions
-3. Handle that review aspect yourself
-
-Choose based on how critical that specialized review is to the overall PR assessment.
+Wait for all four `REVIEW COMPLETE` messages, up to 10 minutes per teammate from spawn. On teammate timeout, consolidate with whatever arrived and note which dimension is missing — a partial review is more useful than no review. If a teammate is stuck (repeated messages, no progress): note the failure, respawn with tighter scope, or absorb that dimension into the lead — pick on criticality.
 
 ### Consolidation
 
-As team lead, integrate teammate findings into a comprehensive PR review. Your job is to synthesize specialized findings into the same output structure used in Standard Workflow, not mechanically merge outputs.
+Same find/filter discipline as standard workflow, but with reviewer attribution: `[Security]`, `[Performance]`, `[Test Coverage]`, `[Architecture]`, or `[Consensus]` when two or more reviewers flagged the same area. Cross-cutting findings get their own callout:
 
-**Reviewer Attribution**: Mark which teammate(s) found each issue: `[Security]`, `[Performance]`, `[Test Coverage]`, `[Architecture]`. Mark independently confirmed findings from multiple reviewers `[Consensus]`.
+> `[Consensus]` The dependency update at `package.json:42` raises both security concerns (known CVE) and performance concerns (increased bundle size).
 
-**Output Format**: Use the same review structure as Standard Workflow Phase 3:
-- Executive Summary (synthesize risk level based on all reviewer findings)
-- Code Quality Analysis (incorporate findings from all specialized reviews)
-- Detailed File-by-File Review (merge findings by file, preserve all reviewer attributions)
-- Discussion & CI Review (same as standard workflow)
-- Testing Verification (same as standard workflow)
-- Recommendations & Action Items (merge and prioritize findings from all reviewers)
+Output format is identical to standard — the user shouldn't need to know which mode ran.
 
-**Cross-cutting Findings**: When findings from multiple reviewers relate to the same code location, highlight this:
-"[Consensus] The dependency update at package.json:42 raises both security concerns (known CVE) and performance concerns (increased bundle size)"
+### Cleanup invariant
 
-### Resource Cleanup
+**The team must be deleted before the command returns, regardless of whether consolidation succeeded.** Skipping leaks team slots and orphans the shared task list.
 
-After completing consolidation (whether successful or failed), always clean up team resources.
+1. `SendMessage` `type: "shutdown_request"` to each teammate.
+2. Wait briefly for shutdown confirmations.
+3. `TeamDelete`.
 
-Send shutdown requests to all teammates via `SendMessage` with `type: "shutdown_request"`, wait briefly for confirmations, then call `TeamDelete` to remove the team and its task list.
-
-If cleanup itself fails, inform the user: "Team cleanup incomplete. You may need to check for lingering team resources."
-
-Execute cleanup regardless of consolidation outcome—even if earlier steps errored or teammates timed out, cleanup must run before ending.
+If cleanup itself errors, tell the user `"Team cleanup incomplete. You may need to check for lingering team resources."` and continue to output.
 
 ---
 
-## Standard Workflow
+## Interactive follow-up
 
-The default PR review approach for comprehensive single-agent analysis.
+After the report, offer the user:
+- Deep-dive into a specific file.
+- Run the test suite (if the repo has a clear test command) to verify the PR claims.
+- Search the codebase for similar patterns elsewhere.
+- Draft a GitHub review comment from the findings.
 
-### Phase 1: PR Information Gathering
+These are optional — the primary output is the report.
 
-When the user provides a PR number or URL:
+## Error responses
 
-1. **Extract PR identifier**:
-   - If given URL: Extract owner/repo/number
-   - If given number: Use current repo context
-   - If given format like "owner/repo#123": Parse accordingly
+Keep the user unblocked:
 
-2. **Fetch PR metadata using GitHub CLI**:
-   ```bash
-   # Get PR details
-   gh pr view {PR_NUMBER} --json title,body,state,author,headRefName,baseRefName,url,commits,reviews,comments,labels,milestone
-
-   # Get PR diff
-   gh pr diff {PR_NUMBER}
-
-   # Get PR comments (both review comments and issue comments)
-   gh pr view {PR_NUMBER} --comments
-
-   # Get PR checks/CI status
-   gh pr checks {PR_NUMBER}
-   ```
-
-3. **Checkout PR branch locally**:
-   ```bash
-   # Fetch the PR branch
-   gh pr checkout {PR_NUMBER}
-
-   # Get current branch name for reference
-   git branch --show-current
-   ```
-
-### Phase 2: Comprehensive Analysis
-
-1. **Compare against base branch**:
-   ```bash
-   # Get the base branch (usually main/master)
-   BASE_BRANCH=$(gh pr view {PR_NUMBER} --json baseRefName -q .baseRefName)
-
-   # Show diff summary
-   git diff $BASE_BRANCH...HEAD --stat
-
-   # Show full diff
-   git diff $BASE_BRANCH...HEAD
-   ```
-
-2. **Analyze commit history**:
-   ```bash
-   # Show commits in this PR
-   git log $BASE_BRANCH..HEAD --oneline --no-merges
-
-   # Detailed commit messages
-   git log $BASE_BRANCH..HEAD --no-merges
-   ```
-
-3. **Review file changes systematically**:
-   - Read all changed files using Read tool
-   - Pay special attention to:
-     - New files (understand their purpose)
-     - Deleted files (understand why removed)
-     - Modified files (understand what changed and why)
-     - Test files (verify test coverage)
-     - Documentation (check if updated appropriately)
-
-4. **Analyze discussion context**:
-   - Review all PR comments and conversations
-   - Note any unresolved discussions
-   - Identify patterns in review feedback
-   - Check if CI/CD checks are passing
-   - Review any linked issues
-
-### Phase 3: Generate Comprehensive Review
-
-Provide a structured review covering:
-
-#### 1. Executive Summary
-- **PR Purpose**: Brief description of what this PR does
-- **Change Scope**: High-level categorization (bugfix, feature, refactor, docs, etc.)
-- **Risk Level**: Low/Medium/High based on scope and complexity
-- **Recommendation**: Approve / Request Changes / Comment
-
-#### 2. Code Quality Analysis
-- **Architecture & Design**: Does it follow project patterns?
-- **Code Style**: Consistent with project conventions?
-- **Testing**: Adequate test coverage? Tests passing?
-- **Documentation**: Inline comments, docstrings, README updates?
-- **Error Handling**: Proper error handling and edge cases?
-- **Performance**: Any performance implications?
-- **Security**: Any security concerns?
-
-#### 3. Detailed File-by-File Review
-For each changed file:
-- **File**: `path/to/file.ext`
-- **Change Type**: Added/Modified/Deleted
-- **Purpose**: Why this file changed
-- **Review Notes**: Specific feedback
-- **Issues Found**: List any problems
-- **Suggestions**: Improvement recommendations
-
-#### 4. Discussion & CI Review
-- **Unresolved Conversations**: List any open threads
-- **CI/CD Status**: All checks passing? Any failures?
-- **Review Comments**: Summary of existing review feedback
-- **Action Items**: What needs to be addressed?
-
-#### 5. Testing Verification
-If appropriate and safe:
-```bash
-# Run tests to verify nothing breaks
-# (Only if the repo has clear test commands)
-# Example: npm test, pytest, cargo test, etc.
+```
+PR not found          — Verify PR number/URL; `gh pr list` to browse.
+Not authenticated     — Run: gh auth login
+Uncommitted changes   — Stash or commit before `gh pr checkout`.
+Merge conflicts       — Note conflicts; suggest resolving before review.
+Network issue         — Suggest retry or manual `gh` command.
 ```
 
-#### 6. Recommendations & Action Items
-Clear list of:
-- **Must Fix**: Blocking issues
-- **Should Fix**: Important but not blocking
-- **Consider**: Nice-to-have improvements
-- **Praise**: What's done well
+## Safety
 
-### Phase 4: Interactive Review Session
+Never auto-commit, auto-push, or run destructive git operations. This command is pure analysis — changes come from the PR author following the findings, not from the reviewer.
 
-After providing the initial review, offer to:
-1. **Deep dive into specific files**: "Which file would you like me to examine more closely?"
-2. **Run tests**: "Should I run the test suite to verify changes?"
-3. **Check for patterns**: "Should I search for similar code patterns elsewhere in the codebase?"
-4. **Draft review comment**: "Would you like me to draft a GitHub review comment?"
-5. **Create follow-up tasks**: "Should I note any follow-up work needed?"
-
-## Usage Examples
+## Usage
 
 ```bash
-# Review a PR by number (in current repo)
-/review-pr 123
-
-# Review a PR by URL
-/review-pr https://github.com/owner/repo/pull/456
-
-# Review a PR with repo context
-/review-pr owner/repo#789
+/review-pr 123                                              # current repo
+/review-pr https://github.com/owner/repo/pull/456           # any repo
+/review-pr owner/repo#789                                   # explicit repo
+/review-pr 123 --swarm                                      # parallel specialized reviewers
 ```
-
-## Important Notes
-
-- **Branch Safety**: This command checks out the PR branch. Warn if there are uncommitted changes.
-- **GitHub Authentication**: Requires `gh` CLI to be authenticated (`gh auth status`)
-- **Repository Context**: Must be run from within a git repository or provide full PR URL
-- **Large PRs**: For PRs with many files (>20), ask which files to prioritize
-- **Private Repos**: Respects GitHub permissions via `gh` CLI authentication
-
-## Error Handling
-
-Handle common scenarios:
-- PR doesn't exist: Verify PR number/URL
-- Not authenticated: Prompt user to run `gh auth login`
-- Uncommitted changes: Ask user to commit or stash first
-- Merge conflicts: Note conflicts and suggest resolution
-- Network issues: Suggest retry or manual `gh` command
-
-## Output Format
-
-Use clear markdown formatting:
-- **Section headers** for organization
-- `Code blocks` for commands and code snippets
-- **Bold** for important findings
-- Bullet lists for readability
-- File paths with line references when specific: `path/to/file.py:42`
-
-## Commit Message Convention Awareness
-
-Check if the repo uses conventional commits (feat:, fix:, docs:, etc.) and verify PR title/commits follow the pattern.
-
-## Follow Project Conventions
-
-Before reviewing, check for:
-- `CONTRIBUTING.md` - Review guidelines
-- `CLAUDE.md` - Project-specific instructions
-- `.github/PULL_REQUEST_TEMPLATE.md` - PR template requirements
-- CI configuration - Understanding what checks run
-
-Read these files first to understand project-specific review criteria.
-
-## Rules
-
-### Prioritization
-
-**High Priority** (review first):
-- File/line-specific changes with significant impact
-- Security-related changes
-- Breaking changes or API modifications
-- Test coverage and quality
-- Documentation completeness
-
-**Lower Priority**:
-- Style/formatting issues
-- Minor refactoring
-- Comment improvements
-
-### Safety
-
-- **No automatic git operations**: Never auto-commit or push
-- **Show findings clearly**: Use structured format for easy scanning
-- **Preserve context**: Understand the full picture before suggesting changes
-- **Ask when unclear**: Use AskUserQuestion if anything is ambiguous
-
-### Best Practices
-
-- Start with understanding the PR's purpose and context
-- Review commits chronologically to understand the development flow
-- Check for consistency with existing codebase patterns
-- Verify test coverage matches the scope of changes
-- Ensure documentation is updated alongside code changes
-- Look for common pitfalls: error handling, edge cases, security issues
