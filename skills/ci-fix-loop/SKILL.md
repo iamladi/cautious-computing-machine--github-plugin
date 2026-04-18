@@ -3,287 +3,154 @@ name: ci-fix-loop
 description: Autonomous CI fix loop with background monitoring and retry logic. Runs up to 10 fix-commit-push-wait cycles until CI passes or max retries reached.
 ---
 
-# CI Fix Loop Skill
+# CI Fix Loop
 
-Orchestrates autonomous CI repair: analyze → fix → commit → push → monitor → repeat until success.
+## Role
 
-## When to Use
+Drive an autonomous CI-repair cycle: analyze the latest failure, apply fixes, commit, push, wait for the new CI run, and loop until CI passes or the retry budget is exhausted. The point is to free the user from babysitting a CI run that's failing on fixable errors (formatting, obvious lint, easy test fixes).
 
-This skill is invoked when:
-- User runs `/fix-ci --loop` or `/fix-ci --auto`
-- User runs `/fix-ci --swarm`
-- Multiple CI fix iterations are needed
-- User wants hands-off CI repair
+Invoked by `/fix-ci --loop`, `/fix-ci --auto`, or `/fix-ci --swarm`.
 
-## CRITICAL: Parse Flags First
+## Priorities
 
-BEFORE proceeding to Phase 1, extract these flags from `$ARGUMENTS`:
-- `--swarm`: If present, set SWARM_MODE=true. You MUST remember this flag — it changes behavior at Step 2.5 (parallel team-based fixing).
-- `--loop` or `--auto`: Standard autonomous mode.
-- Remove all extracted flags from arguments; remaining text is additional context.
+Correct fix (no suppressed signal) > Forward progress (commit and push every iteration) > Termination (bail when progress stalls)
+
+## Invariants
+
+- **Don't run on `main` / `master`.** Autonomous loops that push to a protected branch are dangerous even when the fixes are right. Abort and suggest a hotfix branch.
+- **Stash before starting.** Preserve the user's in-progress work; restore on termination regardless of outcome.
+- **Bail when progress stalls.** If the same errors reappear across two consecutive attempts, the loop isn't converging — human intervention beats burning more CI budget.
+- **Budget caps are hard.** Maximum 10 attempts; maximum 30 minutes per CI run; maximum 2 minutes waiting for a new run to start after push. Each limit exists because the failure mode beyond it is worse than stopping here.
+- **Never `--no-verify` a commit.** Local hooks catch classes of regressions that CI won't; skipping them lets bugs slip into the loop itself.
+
+## Flag parsing
+
+Before anything else, extract flags from `$ARGUMENTS`:
+- `--loop` or `--auto` → standard autonomous mode.
+- `--swarm` → parallel fix mode (see below). Remember this choice — it affects how fixes are applied in each attempt.
+
+Strip consumed flags; anything remaining is contextual (e.g., a PR number).
 
 ## Configuration
 
-| Setting | Value | Description |
-|---------|-------|-------------|
-| max_attempts | 10 | Maximum fix iterations |
-| poll_interval | 60 | Seconds between CI status checks |
-| ci_start_timeout | 120 | Seconds to wait for CI run to start |
-| ci_run_timeout | 1800 | Max seconds to wait for CI completion (30 min) |
+| Setting | Value | Reason |
+|---|---|---|
+| `max_attempts` | 10 | Beyond this, compounding failures usually mean the root cause isn't code |
+| `poll_interval` | 60s | CI status doesn't change faster than this anyway |
+| `ci_start_timeout` | 120s | If CI hasn't started in 2 min, the workflow's likely misconfigured |
+| `ci_run_timeout` | 1800s (30 min) | Longer runs usually indicate infra flake, not a fixable error |
 
-## Workflow
-
-### Phase 1: Initialize
-
-Get context and validate:
+## Initialization
 
 ```bash
 BRANCH=$(git branch --show-current)
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "unknown")
 ```
 
-**Safety checks:**
-
-1. Block on protected branches:
+Guard on protected branches:
 ```bash
 if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
-  echo "Cannot run autonomous fixes on $BRANCH"
-  echo "Create a feature branch: git checkout -b fix/ci-errors"
-  # STOP - do not proceed
+  echo "Cannot run autonomous fixes on $BRANCH. Create a feature branch: git checkout -b fix/ci-errors"
+  # abort
 fi
 ```
 
-2. Handle uncommitted changes:
+Stash uncommitted changes:
 ```bash
 if [[ -n $(git status --porcelain) ]]; then
-  echo "Stashing uncommitted changes..."
   git stash push -m "pre-ci-fix-loop-$(date +%Y%m%d_%H%M%S)"
 fi
 ```
 
-Initialize state:
-```
-attempt = 1
-max_attempts = 10
-last_errors = []
-history = []
-started_at = now
-```
+Start the loop with `attempt=1`, `last_errors=[]`, `history=[]`, `consecutive_same_errors=0`.
 
-### Phase 2: Fix Loop
+## Iteration
 
-For each attempt from 1 to 10:
+Each attempt follows the same shape. The sequence matters — commit must come after fix, push must come after commit, monitor must come after push — but within those boundaries the model picks the tactics. Don't over-narrate each step.
 
-#### Step 2.1: Display Progress
+### Fetch and analyze
 
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CI Fix Loop - Attempt ${attempt}/${max_attempts}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Branch: ${branch}
-Repository: ${repo}
-```
+Pull the latest failed run on this branch, fetch logs for every failed job, and hand them to the `ci-log-analyzer` agent. The agent returns a structured error list (category, file, line, message). Trust that output — re-parsing logs wastes context.
 
-#### Step 2.2: Fetch CI Logs
-
-Get most recent failed run:
 ```bash
 RUN_ID=$(gh run list --branch "$BRANCH" --limit 5 --json databaseId,conclusion \
   --jq '[.[] | select(.conclusion == "failure")][0].databaseId')
-
-if [ -z "$RUN_ID" ]; then
-  echo "No failed runs found - checking if CI is passing..."
-  # May already be fixed, verify
-fi
-```
-
-Fetch logs for failed jobs:
-```bash
 FAILED_JOBS=$(gh run view $RUN_ID --json jobs --jq '.jobs[] | select(.conclusion == "failure") | .databaseId')
-
 for JOB_ID in $FAILED_JOBS; do
   gh api repos/${REPO}/actions/jobs/${JOB_ID}/logs > /tmp/ci-logs-${JOB_ID}.txt 2>/dev/null || true
 done
 ```
 
-#### Step 2.3: Analyze Errors
+If no failed runs exist, CI might already be passing — skip to monitoring to confirm.
 
-Invoke the `ci-log-analyzer` agent:
-- Parse CI logs from /tmp/ci-logs-*.txt
-- Extract structured error list with type, file, line, message
-- Returns JSON with errors categorized by type (lint/test/type/build)
+### Termination check (no progress)
 
-#### Step 2.4: Check for Progress
+Compare the current error list to `last_errors`. If they're identical after at least one fix attempt, increment `consecutive_same_errors`. At 2, exit the loop — the fixes aren't landing or the errors are beyond what this skill can handle. Report the persistent errors in the final summary; human intervention is the right move.
 
-Compare current errors with previous attempt:
+### Apply fixes
 
-```
-if current_errors == last_errors AND attempt > 1:
-  # Same errors after fix attempt = likely unfixable
-  consecutive_same_errors += 1
+Default path: single `ci-error-fixer` agent handles the whole error list sequentially. Appropriate when errors are in one or two files, or when swarm mode wasn't requested.
 
-  if consecutive_same_errors >= 2:
-    echo "Same errors detected after 2 fix attempts - aborting"
-    echo "These errors may require manual intervention"
-    # STOP - exit loop with failure report
-fi
+**Swarm path** — triggered when `--swarm` was set *and* errors span 2+ distinct files:
 
-if current_errors is empty:
-  # No errors found - CI might be passing
-  # Skip to monitoring phase
-```
+Split the error list into up to 4 partitions by file (grouping by directory proximity if there are more than 4 files). Non-file-specific errors (dependency resolution, config, flaky tests without file association) stay with the lead for sequential handling.
 
-#### Step 2.5: Apply Fixes
+Create the team with `TeamCreate`: name `fix-ci-{YYYYMMDD-HHMMSS}`, description `CI Fix Attempt {attempt}`. If `TeamCreate` is unavailable (experimental flag off), fall back to the single-agent path — surface the fallback in logs but don't abort the attempt.
 
-**CRITICAL Condition Check**: Before applying fixes, check BOTH conditions — was `--swarm` set during flag parsing above, AND are errors in 2+ files?
+Spawn one teammate per partition via `Task` with `team_name` and `subagent_type: "general-purpose"`. Teammates can't see this conversation — embed partition details as literal text.
 
-```
-file_count = count of distinct files with errors
-use_swarm = (file_count >= 2) AND (SWARM_MODE is true from "Parse Flags First" above)
-```
-
-**If use_swarm is FALSE** (errors in single file OR --swarm not requested):
-- Invoke the `ci-error-fixer` agent with error list
-- Applies targeted fixes based on error type
-- Shows diffs for each change
-- Reports fixed vs flagged-for-manual-review counts
-- Track results:
-  ```
-  errors_fixed = count of successfully fixed errors
-  errors_flagged = count of errors needing manual review
-  ```
-
-**If use_swarm is TRUE** (2+ files with errors AND --swarm flag set):
-
-**Team Prerequisites and Fallback**:
-
-Attempt to create the agent team using `TeamCreate` with a unique timestamped name: `fix-ci-{YYYYMMDD-HHMMSS}` and description: "CI Fix Attempt {attempt}".
-
-If team creation fails (tool unavailable or experimental features disabled), inform the user that swarm mode requires agent teams to be enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in settings.json), then fall back to the standard (non-swarm) fix approach using the existing `ci-error-fixer` agent as above.
-
-**Partitioning Strategy** (performed by lead after centralized analysis in Step 2.3):
-
-1. Group errors by file path (deterministic: sort errors by file path first)
-2. If >4 distinct files, group by directory proximity to create max 4 partitions
-3. Non-file-specific errors (dependency resolution, config issues, flaky tests without clear file association) remain with lead for sequential handling
-4. Each partition contains: error list for those files, file paths, error types and messages
-
-**Teammate Spawn Protocol** (max 4 teammates, one per file partition):
-
-Spawn each teammate via the `Task` tool with `team_name` parameter and `subagent_type: "general-purpose"`. Each teammate prompt MUST include as string literals:
-
-```
+<example name="Fix-loop teammate prompt">
 You are fixing CI errors for a specific set of files as part of a parallel fix team.
 
 YOUR FILE PARTITION:
-{list of file paths assigned to this teammate}
+{literal list of file paths}
 
 ERRORS TO FIX:
-{error list for your files - type, file, line, message}
+{literal error list for these files — type, file, line, message}
 
 FILE CONTENTS:
-{Read and include relevant file contents}
+{read each file and include its full contents here}
 
-YOUR TASK:
-Fix all errors in your assigned files. Apply targeted fixes based on error type:
-- Lint errors: auto-fix with formatter/linter where possible
-- Type errors: add type annotations, fix type mismatches
-- Test failures: fix test logic or implementation bugs
-- Build errors: fix import paths, missing dependencies
+Apply targeted fixes per error type: lint with the formatter or linter, type errors with correct annotations or mismatch fixes, test failures with corrected logic or implementation bugs, build errors with import/dependency fixes.
 
-WORKING CONSTRAINTS:
-You're one of several agents editing files in parallel. This means:
-- Edit only your assigned files — the lead handles git staging and commits to avoid conflicts between teammates.
-- Don't run tests or builds — they'd interfere with other teammates' file changes happening concurrently.
-- Communicate only via SendMessage (no user interaction available in team context).
-- Make minimal, targeted fixes — over-editing risks introducing new errors and makes the lead's review harder.
-- Read files completely without limit/offset so you don't miss relevant context.
+Constraints (parallel-team context):
+- Edit only your assigned files. The lead handles staging and commits to avoid conflicts.
+- Don't run tests or builds — other teammates are editing concurrently.
+- Communicate via `SendMessage` only; `AskUserQuestion` isn't available in team context.
+- Make minimal, targeted fixes. Over-editing introduces new errors and complicates the lead's review.
+- Read files completely, no limit/offset.
 
-COMPLETION SIGNAL:
-When you've fixed all errors in your files:
-1. Send "FIX COMPLETE" via SendMessage
-2. Wait for shutdown_request
+When every error in your partition is fixed:
+1. `SendMessage` `FIX COMPLETE`.
+2. Wait for `shutdown_request`.
+</example>
 
-ERROR TYPES AND HANDLING:
-{specific guidance based on error types in this partition}
-```
+Wait for every teammate's `FIX COMPLETE`, up to 10 minutes per teammate from spawn. On timeout, proceed with available fixes and note it in the history. After teammates complete (or time out), the lead stages all changes in one commit (below) rather than per-teammate.
 
-**Completion Protocol**:
+**Cleanup invariant** — regardless of swarm success or failure, `SendMessage` `type: "shutdown_request"` to each teammate, wait briefly, then `TeamDelete`. Skipping leaks team slots.
 
-Wait for all teammates to signal completion by sending "FIX COMPLETE" messages. Timeout: 10 minutes from teammate spawn time.
+### Commit and push
 
-If timeout occurs, proceed with available fixes and note which teammates timed out.
-
-**Lead Collects Changes**:
-
-After all teammates complete (or timeout), the lead stages ALL changes in a single commit and single push:
+One commit per iteration — captures the full fix for this attempt in a single reviewable unit:
 
 ```bash
 git add .
-
-git commit -m "fix(ci): automated swarm fix attempt ${attempt}
-
-Errors addressed across ${file_count} files:
-- ${error_summary_list}
-
-Attempt ${attempt} of ${max_attempts} (ci-fix-loop with swarm)"
-```
-
-This replaces the per-error serial commits from the non-swarm approach.
-
-Push to trigger CI (swarm mode):
-```bash
-PUSH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-git push origin ${BRANCH}
-```
-
-**Resource Cleanup**:
-
-Always execute cleanup regardless of success or failure:
-1. Send shutdown requests to all teammates via `SendMessage` with `type: "shutdown_request"`
-2. Wait briefly for confirmations
-3. Call `TeamDelete` to remove the team
-
-If cleanup fails, log warning: "Team cleanup incomplete. You may need to check for lingering team resources."
-
-Execute cleanup before proceeding to Step 2.6.
-
-**Track Results**:
-```
-errors_fixed = count of successfully fixed errors across all teammates
-errors_flagged = count of errors needing manual review
-```
-
-**Note**: The team is created and torn down within this single fix iteration (Step 2.5). The outer loop (Phase 2) continues as normal after this step completes.
-
-#### Step 2.6: Commit & Push
-
-**Note**: If swarm mode was used in Step 2.5, the commit and push were already performed by the lead after collecting teammate changes. Skip this step and proceed to Step 2.7.
-
-**Otherwise** (standard non-swarm mode):
-
-Stage and commit changes:
-```bash
-git add .
-
-# Create descriptive commit message
 git commit -m "fix(ci): automated fix attempt ${attempt}
 
 Errors addressed:
 - ${error_summary_list}
 
-Attempt ${attempt} of ${max_attempts} (ci-fix-loop)"
-```
+Attempt ${attempt} of ${max_attempts} (ci-fix-loop${SWARM_SUFFIX})"
 
-Push to trigger CI:
-```bash
 PUSH_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 git push origin ${BRANCH}
 ```
 
-#### Step 2.7: Wait for CI Run to Start
+`PUSH_TIME` is used below to detect the new run (distinguishing it from the run currently being analyzed). In swarm mode the lead owns this step — teammates never run git commands, which keeps coordination simple.
 
-Use the Monitor tool to detect when a new CI run appears after the push:
+### Wait for the new run to start
+
+Use the `Monitor` tool (no LLM tokens burned on polling) to watch for a run created after `PUSH_TIME`, capped at `ci_start_timeout`:
 
 ```
 Monitor:
@@ -306,13 +173,13 @@ Monitor:
     done
 ```
 
-**Notification handling:**
-- `STARTED|{RUN_ID}` → capture `NEW_RUN_ID`, proceed to Step 2.8
-- Monitor timeout (no notification within 120s) → warn "No CI run started after 120s — check if workflows are enabled for this branch", proceed to Step 2.9 with `TIMEOUT`
+Notifications:
+- `STARTED|{RUN_ID}` → capture as `NEW_RUN_ID`, proceed to monitoring.
+- Monitor timeout (no notification within 120s) → warn `"No CI run started after 120s — check if workflows are enabled for this branch"` and proceed with `TIMEOUT`.
 
-#### Step 2.8: Monitor CI Completion
+### Monitor to terminal state
 
-Use the Monitor tool to track the CI run until terminal state. When `NEW_RUN_ID` is known from Step 2.7, filter by that specific run to avoid race conditions with concurrent runs:
+Run the `Monitor` tool again, filtered by `NEW_RUN_ID` when known (avoids race conditions with concurrent runs on the same branch):
 
 ```
 Monitor:
@@ -356,142 +223,73 @@ Monitor:
     done
 ```
 
-**Notification handling:**
-- `SUCCESS|{RUN_ID}` → proceed to Step 2.9 with success
-- `FAILURE|{RUN_ID}` → proceed to Step 2.9 with failure (triggers next fix iteration)
-- `CANCELLED|{RUN_ID}` → warn "CI run was cancelled externally" and exit loop
-- `ACTION_REQUIRED|{RUN_ID}` → warn user that manual approval is needed, exit loop
-- Monitor timeout (30 min) → treat as `TIMEOUT|unknown`, report and suggest `gh run watch`
+Handle the result:
+- **SUCCESS** — exit the loop, report success.
+- **FAILURE** — record history, `last_errors = current_errors`, `attempt += 1`, back to `Fetch and analyze`.
+- **CANCELLED** — warn and exit. Someone (or something) cancelled the run externally; continuing would loop indefinitely.
+- **ACTION_REQUIRED** — warn the user that manual approval is needed and exit.
+- **TIMEOUT** (30 min) — report and suggest `gh run watch`; offer continue-waiting vs. abort — long CI runs usually indicate infrastructure issues, not fixable errors.
 
-#### Step 2.9: Handle Result
+### Record
 
-Parse monitor output:
+Append to history:
 ```
-case "$RESULT" in
-  SUCCESS*)
-    # CI passed! Exit loop with success
-    ;;
-  FAILURE*)
-    # CI still failing - continue to next attempt
-    ;;
-  CANCELLED*)
-    # Run was cancelled - warn and exit
-    echo "CI run was cancelled externally"
-    # EXIT with warning
-    ;;
-  TIMEOUT*)
-    # Exceeded 30 min wait
-    echo "CI run timed out after 30 minutes"
-    # Ask if should continue waiting or abort
-    ;;
-esac
+{attempt, errors_found, errors_fixed, errors_flagged, run_id, result, duration}
 ```
 
-#### Step 2.10: Record History
+## Final report
+
+On exit — success, failure, or abort — produce:
 
 ```
-history.append({
-  attempt: attempt,
-  errors_found: len(current_errors),
-  errors_fixed: errors_fixed,
-  errors_flagged: errors_flagged,
-  run_id: run_id,
-  result: conclusion,
-  duration: attempt_duration
-})
-
-last_errors = current_errors
-attempt += 1
-```
-
-### Phase 3: Final Report
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CI Fix Loop Complete
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Result: [SUCCESS|FAILURE] after ${attempts} attempt(s)
-
-Summary:
-  Total time: ${total_duration}
-  Commits created: ${commit_count}
-  Errors fixed: ${total_errors_fixed}
+Result: SUCCESS | FAILURE | ABORTED after {attempts} attempt(s)
+Total time: {duration}
+Commits created: {count}
+Errors fixed: {total}
 
 History:
+  Attempt 1: Found 5 errors, fixed 5 → FAILURE (5 new errors surfaced after first fix)
+  Attempt 2: Found 5 errors, fixed 3 → SUCCESS
+  ...
 ```
 
-For each entry in history:
+**On failure** — surface what's left so the human knows where to pick up:
 ```
-  Attempt ${n}: Found ${errors_found} errors, fixed ${fixed} → ${result}
-```
+Remaining issues (need manual intervention):
+  - src/x.ts:42 — type mismatch on return value (error persisted across 2 attempts)
 
-If FAILURE:
-```
-Remaining Issues (require manual intervention):
-  - ${file}:${line} - ${message}
-    Type: ${type}
-
-Suggested next steps:
-  1. Review errors above
-  2. Check CI logs: gh run view ${last_run_id} --log-failed
-  3. Fix manually and push
+Next:
+  1. Review remaining errors above.
+  2. Inspect logs: gh run view {last_run_id} --log-failed
+  3. Fix manually and push.
 ```
 
-If SUCCESS:
+**On success** — report the commit trail so the user can squash or review:
 ```
-CI is now passing!
+CI is now passing.
 
-Next steps:
-  1. Review automated commits: git log --oneline -${commit_count}
-  2. Squash if desired: git rebase -i HEAD~${commit_count}
-  3. Create PR: /github:create-pr
+Next:
+  1. Review commits: git log --oneline -{commit_count}
+  2. Squash if desired: git rebase -i HEAD~{commit_count}
+  3. Open PR: /github:create-pr
 ```
 
-## Error Handling
+## Error handling
 
-### Network/API Failures
-- Retry `gh` commands 3 times with 5s backoff
-- If persistent, abort and report
+- **Network / `gh` flakes** — retry the command up to 3 times with 5s backoff before treating as persistent; abort the loop if still failing.
+- **Push rejection** (upstream advanced) — don't try to resolve automatically; tell the user `"Upstream changes detected. Pull and retry: git pull --rebase && /fix-ci --loop"`.
+- **CI start timeout** (no run within 2 min) — check workflow configuration; continue to monitor just in case a delayed run appears.
+- **CI run timeout** (30 min exceeded) — offer continue-waiting vs. abort; don't silently extend.
+- **Team creation fails** (swarm only) — fall back to single-agent fix for that iteration; keep going.
 
-### Git Conflicts
-- If push fails due to upstream changes:
-```
-echo "Upstream changes detected"
-echo "Pull and retry: git pull --rebase && /fix-ci --loop"
-```
-- Abort loop
+## Safety recap
 
-### Unfixable Errors
-- Track errors persisting across 2+ attempts
-- Mark as "unfixable" in final report
-- Continue attempting other errors
-
-### Timeout
-- CI run timeout (30 min): report and suggest `gh run watch`
-- CI start timeout (2 min): check workflow configuration
-
-## Safety Mechanisms
-
-1. **Branch protection**: Never run on main/master
-2. **Max attempts**: Hard limit of 10 iterations
-3. **Stash protection**: Uncommitted changes are preserved
-4. **Progress detection**: Abort if same errors repeat twice
-5. **Timeout limits**: 30 min max CI wait per attempt
-6. **Commit tracking**: Report all commits for easy revert
-7. **Swarm mode constraints**: When using `--swarm`, teammates are restricted to file editing only - they cannot run git commands (commit/push/add), test commands, build commands, or use AskUserQuestion. This prevents coordination issues and ensures the lead maintains control of the git workflow.
-
-## Token Efficiency
-
-Estimated per iteration:
-- Analysis (sonnet): ~2000 tokens
-- Fix application (sonnet): ~3000 tokens
-- State/reporting: ~500 tokens
-- **Total: ~5500 tokens/iteration**
-- **10 iterations max: ~55,000 tokens**
-
-Key optimizations:
-- CI monitoring uses the Monitor tool (zero LLM tokens)
-- No context accumulation between iterations
-- Minimal state tracking
-- Background execution frees terminal
+The invariants section at the top is load-bearing, but the mechanics also matter:
+- Branch protection prevents protected-branch loops.
+- Stash preserves uncommitted work.
+- `consecutive_same_errors >= 2` aborts loops that aren't converging.
+- Commit log lets the user squash or revert cleanly.
+- In swarm mode, teammates edit files only — they don't run git, builds, or tests. That keeps coordination simple and prevents teammates from clobbering each other's work.
+- CI monitoring uses the `Monitor` tool rather than an LLM polling agent — zero token cost for the wait loop.
