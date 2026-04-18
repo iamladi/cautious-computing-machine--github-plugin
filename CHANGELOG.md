@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-04-18
+
+### Changed
+- `commands/address-pr-comments.md` rewritten for Opus 4.7 (685 → ~330 lines). Flattened Phase 1.1–2.6 rigid numbering into flow-stages with stated invariants ("every comment replied", "one fix one commit", "posted replies are permanent"). Kept caps only on the genuine security boundary (reply body construction via `jq --arg` to prevent shell injection). Confidence-scoring thresholds framed as reasoning, not arithmetic. Reply categories retain distinct handling but with explanations inline.
+- `commands/review-pr.md` rewritten for Opus 4.7 (533 → ~280 lines). **Find/filter split added** (per 4.7 review guidance): find stage collects every issue with severity + confidence; filter stage surfaces blockers (any conf), majors (≥ med), minors grouped. Without this split, 4.7 silently suppresses findings. Stripped `CRITICAL: Route Selection` caps wall in favor of reasoned `--swarm` paragraph. Four specialized-reviewer prompts consolidated into a shared template with per-role parameterization.
+- `commands/fix-ci.md` rewritten for Opus 4.7 (220 → ~150 lines). Step 1–5 scaffolding collapsed into role + invariants + single-iteration workflow. Error triage split into find (`ci-log-analyzer` categorizes all) + filter (which to fix this iteration, which are out of scope). Invariants stated explicitly: don't suppress test/lint signal, no `--no-verify`, branch protection holds, preserve uncommitted work.
+- `skills/ci-fix-loop/SKILL.md` rewritten for Opus 4.7 (451 → ~230 lines). Step 2.1–2.10 attempt loop replaced with iteration structure + explicit termination invariants (10-attempt cap, 30-min per CI run, 2-min new-run wait, 2-consecutive-same-errors abort). Stale `budget_tokens`/"Token Efficiency" section removed — 4.7 uses the `effort` parameter. `CRITICAL: Parse Flags First` caps reframed as flag-parsing instruction. Swarm partitioning described as when/why + trust boundary, not detailed algorithm. Preserves the v1.5.2 `Monitor` tool integration for zero-token CI polling.
+- `agents/ci-error-fixer.md` surgical pass: `Safety Rules` ✅/❌ checklist rewritten as reasoning-based "auto-fix vs. flag for review" section explaining *when* each fix category is unambiguous. `Important Notes` bullet-list reframed as operating constraints with inline *why*.
+- `agents/ci-log-analyzer.md` surgical pass: Step 1–7 analysis workflow flattened into prose; `→ Type:` rule-pattern format preserved in the pattern library (load-bearing reference) but workflow section rewritten. Added root-cause-vs-symptom guidance for cascading errors.
+
+### Fixed
+- `scripts/validate-plugin.ts` — zod 3.25+ `z.record()` signature: every `z.record(X)` replaced with `z.record(z.string(), X)`. Added `.passthrough()` on command values so the `source` field stays valid. Registered missing `skills` field (array of skill manifest paths). Pre-existing validator bug that blocked `bun run validate` on `main`.
+
+### Rationale
+
+Aligns github-plugin with the Opus 4.7 principles captured in `sdlc-plugin/OPUS_4_7_PROMPTING.md` (PR #58) and already adopted across sdlc-plugin and primitives-plugin. 4.7 is more literal, less implicit-generalizing, and trends toward fewer tool calls than 4.5/4.6. The biggest behavioral wins here are the find/filter split in `review-pr` (stops 4.7 from silently suppressing findings), the explicit termination invariants in `ci-fix-loop` (stops runaway autonomous loops), and the removal of over-prescribed Phase 1.1–2.6 numbering in `address-pr-comments` (lets the model own ordering where it doesn't need to be rigid).
+
 ## [1.5.2] - 2026-04-10
 
 ### Changed

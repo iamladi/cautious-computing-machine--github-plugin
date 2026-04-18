@@ -2,218 +2,135 @@
 description: Auto-detect, analyze, and fix CI/CD failures on any branch
 ---
 
-# Fix CI/CD Failures
+# Fix CI Failures
 
-Auto-detect, analyze, and fix CI/CD failures on any branch using GitHub CLI and specialized agents.
+## Role
+
+Find why CI is failing on a branch or PR and fix the underlying code so CI passes. Delegate log parsing to the `ci-log-analyzer` agent and fix application to the `ci-error-fixer` agent — trust their output rather than re-parsing logs in this command.
+
+## Priorities
+
+Root-cause fix (not a workaround) > Minimal blast radius (one commit per coherent fix) > Fast turnaround
+
+## Invariants
+
+- **Don't disable a test or lint rule to make CI green.** Those are signal. If a test fails, either the test is wrong (fix the test) or the code is wrong (fix the code). Suppressing the signal hides the bug.
+- **No `--no-verify` on commits.** Pre-commit hooks catch regressions locally before CI even runs; skipping them moves failures downstream.
+- **Branch protection holds.** Never run this workflow on `main` / `master` without explicit user approval. The safer path is a hotfix branch.
+- **Preserve uncommitted work.** If the tree is dirty, stash it before applying fixes, then restore.
 
 ## Usage
 
 ```bash
-/fix-ci              # Current branch (single fix)
-/fix-ci 123          # PR number (single fix)
-/fix-ci https://...  # PR URL (single fix)
-/fix-ci --loop       # Autonomous loop mode (up to 10 retries)
-/fix-ci --auto       # Alias for --loop
-/fix-ci 123 --loop   # Loop mode for specific PR
+/fix-ci              # current branch (single iteration)
+/fix-ci 123          # PR number
+/fix-ci https://...  # PR URL
+/fix-ci --loop       # autonomous loop (up to 10 retries), delegates to ci-fix-loop skill
+/fix-ci --auto       # alias for --loop
+/fix-ci 123 --loop   # loop mode targeting a specific PR
 ```
 
-User provided: `$ARGUMENTS`
+## Routing
 
-## Autonomous Loop Mode
+`--loop` or `--auto` in `$ARGUMENTS` → delegate to the `ci-fix-loop` skill. That skill owns the full autonomous cycle (analyze → fix → commit → push → wait on CI → repeat, up to 10 iterations), and handles background monitoring and per-iteration safety. This command should hand off cleanly — don't duplicate the loop logic here.
 
-When `--loop` or `--auto` flag is present, this command runs in autonomous mode using the `ci-fix-loop` skill.
-
-**Detection:**
 ```bash
 ARGS="$ARGUMENTS"
 if [[ "$ARGS" == *"--loop"* ]] || [[ "$ARGS" == *"--auto"* ]]; then
-  # Extract PR number if provided (e.g., "123 --loop" → "123")
   PR_NUM=$(echo "$ARGS" | grep -oE '^[0-9]+' || echo "")
-
-  # Invoke ci-fix-loop skill
-  # The skill will handle the full autonomous loop:
-  # 1. Analyze CI errors
-  # 2. Apply fixes
-  # 3. Commit and push
-  # 4. Monitor CI in background (polling every 60s)
-  # 5. If CI fails, repeat (up to 10 times)
-  # 6. Report final status
-
-  # IMPORTANT: Do not proceed with single-fix workflow below
+  # Invoke ci-fix-loop skill with $PR_NUM; return.
 fi
 ```
 
-**Behavior:**
-- Runs up to 10 fix-commit-push-wait cycles
-- Fully autonomous (no user prompts)
-- Background CI monitoring between iterations
-- Reports detailed history when complete
-- Aborts if same errors appear twice consecutively
+Without those flags, run the single-iteration workflow below.
 
-**Safety:**
-- Will not run on main/master branch
-- Stashes uncommitted changes before starting
-- Maximum 30 minute wait per CI run
+## Single-iteration workflow
 
----
+### Detect context
 
-When NOT in loop mode, proceed with single-fix workflow below.
-
-## Workflow
-
-### Step 1: Detect Context
-
-First, determine what CI context we're working with:
+Figure out what CI pipeline this branch or PR is actually using. The detection order prioritizes PRs because they carry richer metadata than raw workflow runs:
 
 ```bash
 CURRENT_BRANCH=$(git branch --show-current)
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 ```
 
-**Priority order:**
-1. If user provided PR number/URL: use that
-2. Feature branch with PR: use PR checks
-3. Feature branch without PR: use `gh run list`
-4. Main/master: use `gh run list`
+1. User passed a PR number or URL → use that directly.
+2. Feature branch with an open PR → use PR checks (`gh pr status`, `gh pr view {PR} --json statusCheckRollup`).
+3. Feature branch without a PR → fall back to recent workflow runs (`gh run list --branch`).
+4. `main` / `master` → prompt before doing anything (see invariants); if approved, use workflow runs.
 
-**Detection commands:**
+### Fetch the failed logs
 
-For **main/master branch**, use workflow runs:
+Once the context is resolved, pull logs for every failed job. Save to `/tmp/ci-logs-{JOB_ID}.txt` so the log-analyzer agent can read them from disk without re-fetching:
+
 ```bash
-gh run list --branch "$CURRENT_BRANCH" --limit 5 --json databaseId,status,conclusion,name
-```
-
-For **feature branches**, check for PR first:
-```bash
-gh pr status --json number,title,url,headRefName
-```
-
-If no PR exists on feature branch, fall back to runs:
-```bash
-gh run list --branch "$CURRENT_BRANCH" --limit 5 --json databaseId,status,conclusion,name
-```
-
-### Step 2: Fetch Failed CI Logs
-
-Once you've identified the context, fetch logs for failed checks.
-
-**PR-based approach:**
-```bash
-# Get failed checks from PR
+# PR path
 gh pr view {PR} --json statusCheckRollup | jq '.statusCheckRollup[] | select(.conclusion == "FAILURE")'
-
-# Fetch job logs
 gh api repos/${REPO}/actions/jobs/{JOB_ID}/logs > /tmp/ci-logs-{JOB_ID}.txt
-```
 
-**Run-based approach:**
-```bash
-# Get most recent failed run
+# Run path
 RUN_ID=$(gh run list --branch "$CURRENT_BRANCH" --limit 5 --json databaseId,conclusion --jq '[.[] | select(.conclusion == "failure")][0].databaseId')
-
-# Get failed jobs from run
 gh run view $RUN_ID --json jobs --jq '.jobs[] | select(.conclusion == "failure")'
-
-# Fetch job logs
 gh api repos/${REPO}/actions/jobs/{JOB_ID}/logs > /tmp/ci-logs-{JOB_ID}.txt
 ```
 
-### Step 3: Analyze Errors with CI Log Analyzer Agent
+### Find stage — parse errors via `ci-log-analyzer`
 
-Launch the `ci-log-analyzer` agent to parse the logs and identify error patterns:
+Launch the `ci-log-analyzer` agent with the log paths. The agent categorizes errors (lint / test / type / build), extracts file paths and line numbers, and returns a structured list. Trust that output — if the agent thinks an error is `type-error` at `src/x.ts:42`, don't re-read the logs to second-guess.
 
-```bash
-# Use Task tool to launch ci-log-analyzer agent
-```
+The agent covers common patterns: Ruff/Prettier/Biome format diffs, test failures (pytest `FAILED`, Jest `● FAIL`, Go `--- FAIL`), type errors (mypy, tsc, Flow), build errors (`SyntaxError`, `ImportError`, missing deps).
 
-The agent will identify:
-- **Ruff/Lint errors**: `Would reformat: {file}`, unused imports, etc.
-- **Test failures**: `FAILED tests/...`, `AssertionError`, `ModuleNotFoundError`
-- **Type errors**: `error: Incompatible types`, `Missing return statement`
-- **Build errors**: `SyntaxError`, `ImportError`, missing dependencies
+### Filter stage — decide what to fix this iteration
 
-Agent returns structured error list with:
-- Error type (lint/test/type/build)
-- Affected file paths
-- Error messages
-- Line numbers (if available)
+From the full error list, pick a coherent subset to address in a single commit. Rules of thumb:
 
-### Step 4: Apply Fixes with CI Error Fixer Agent
+- Fix every error in a single category before mixing (all lint first, then tests, then types) — one commit per category reads cleaner in git history.
+- If one error is a root cause for others (e.g., a missing import cascades into multiple test failures), fix the root and let the follow-ups resolve themselves.
+- If the error list has > 20 items across multiple categories, surface the plan to the user and ask which to prioritize rather than attempting everything at once.
 
-Launch the `ci-error-fixer` agent with the error list from Step 3:
+Out of this iteration's scope: flakes that weren't reproduced, infrastructure issues (GitHub Actions outages, runner pool), errors in paths the current branch didn't touch. Note these in the summary rather than silently ignoring.
 
-```bash
-# Use Task tool to launch ci-error-fixer agent with error context
-```
+### Apply fixes via `ci-error-fixer`
 
-The agent will:
-1. Read affected files
-2. Apply appropriate fixes based on error type:
-   - **Ruff**: Run `uv run ruff format {file}` or apply formatting
-   - **Tests**: Fix assertions, imports, test setup
-   - **Types**: Add type hints, fix type mismatches
-   - **Build**: Fix syntax, add missing imports
-3. Show diffs for each change
-4. Report completion status
+Launch the `ci-error-fixer` agent with the filtered error list. The agent reads the affected files, applies fixes appropriate to each error type, and reports diffs. Trust the agent's output — it's the specialist for this flow.
 
-### Step 5: Summary & Next Steps
-
-Present a summary of all fixes applied:
+### Summarize
 
 ```
-✅ Fixed {N} issues:
-  • Lint: {file1} - {description}
-  • Test: {file2} - {description}
-  • Type: {file3} - {description}
+Fixed {N} issues:
+  • Lint: {file1} — {what changed}
+  • Test: {file2} — {what changed}
+  • Type: {file3} — {what changed}
 
-Next steps:
-  1. Review changes: git diff
-  2. Commit: git add . && git commit -m "fix: CI failures"
+Out of scope this run:
+  • Flake at tests/x.spec.ts (not reproducible locally)
+
+Next:
+  1. Review: git diff
+  2. Commit: git add {files} && git commit -m "fix: CI {category}"
   3. Push: git push
 ```
 
-## Safety Checks
+Don't auto-commit or auto-push in single-iteration mode — the user needs to approve the diff first. Loop mode delegates that responsibility to the `ci-fix-loop` skill.
 
-**IMPORTANT: Run these checks before making any changes:**
+## Safety gates
 
-1. **Main/master branch warning:**
-   ```bash
-   if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-     echo "⚠️  WARNING: You're on $CURRENT_BRANCH branch."
-     echo "Suggest creating hotfix branch: git checkout -b hotfix/ci-fixes"
-     # Ask user if they want to continue or create branch
-   fi
-   ```
+Apply before any fix lands:
 
-2. **Uncommitted changes:**
-   ```bash
-   if [[ -n $(git status -s) ]]; then
-     echo "⚠️  WARNING: You have uncommitted changes."
-     echo "Consider stashing: git stash"
-     # Ask user if they want to continue
-   fi
-   ```
+- **On `main` / `master`.** Prompt: `"You're on $CURRENT_BRANCH. Suggest hotfix branch: git checkout -b hotfix/ci-fixes"`. Ask before continuing — fixing CI on main directly is usually the wrong shape.
+- **Uncommitted changes.** Warn and offer to stash: `git stash push -u -m "pre-fix-ci"`. Restore after (regardless of success/failure).
+- **Ambiguous errors.** When the log-analyzer returns something that doesn't cleanly map to a fix strategy, flag it and ask the user. Guessing on an unfamiliar failure mode usually makes things worse.
 
-3. **Unclear fixes:**
-   - If error patterns are ambiguous or fixes are uncertain
-   - Flag for manual review
-   - Show the error and ask user how to proceed
+## Error responses
 
-4. **Multiple failures:**
-   - If there are many failures across different categories
-   - Ask user which to prioritize (lint/test/type/build)
-   - Or ask if they want to fix all
-
-## Error Handling
-
-If any step fails:
-- Show clear error message
-- Suggest manual investigation steps
-- Provide relevant gh CLI commands for debugging
+```
+Not authenticated       — Run: gh auth login
+No failed checks found  — CI is passing or hasn't run yet.
+Log fetch failed        — Suggest manual: gh run view $RUN_ID --log-failed
+Agent fix failed        — Show agent output; suggest manual investigation.
+```
 
 ## Notes
 
-- Requires `gh` CLI to be installed and authenticated
-- Uses specialized agents for complex parsing and fixing
-- Always shows diffs before finalizing
-- Never commits automatically without user confirmation
+Requires `gh` CLI authenticated (`gh auth status`). Delegates parsing and fixing to specialized agents — this command's job is context detection, log fetching, and coordination.

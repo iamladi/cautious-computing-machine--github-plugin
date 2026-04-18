@@ -18,12 +18,13 @@ const PluginManifestSchema = z.object({
   repository: z.string().url().optional(),
   license: z.string().optional(),
   keywords: z.array(z.string()).optional(),
-  commands: z.record(z.object({
+  commands: z.record(z.string(), z.object({
     description: z.string().optional(),
-  })).optional(),
+  }).passthrough()).optional(),
   agents: z.array(z.string()).optional(),
-  hooks: z.union([z.string(), z.record(z.any())]).optional(),
-  mcpServers: z.union([z.string(), z.record(z.any())]).optional(),
+  skills: z.array(z.string()).optional(),
+  hooks: z.union([z.string(), z.record(z.string(), z.any())]).optional(),
+  mcpServers: z.union([z.string(), z.record(z.string(), z.any())]).optional(),
 });
 
 async function validatePlugin() {
